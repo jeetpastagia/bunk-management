@@ -153,6 +153,12 @@ test('register-token rejects a missing fcmToken before touching the DB (auth sti
   assert.equal(res.status, 401);
 });
 
+test('backfill-bunks route requires auth', async () => {
+  const app = createApp();
+  const res = await request(app, 'POST', '/api/attendance/subjects/507f1f77bcf86cd799439011/backfill-bunks', { bunked: 3 });
+  assert.equal(res.status, 401);
+});
+
 test('scheduler module loads and exposes start/stop without side effects at require-time', () => {
   const { startNotificationScheduler, stopNotificationScheduler } = require('../src/jobs/scheduler');
   assert.equal(typeof startNotificationScheduler, 'function');

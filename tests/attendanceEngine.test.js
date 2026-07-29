@@ -139,6 +139,27 @@ test('holiday and cancelled never affect conducted/attended', () => {
   assert.equal(s.percentage, 0);
 });
 
+test('resolveBackfillCounts: splits pending lectures into bunked/attended', () => {
+  const result = engine.resolveBackfillCounts(20, 5);
+  assert.equal(result.bunked, 5);
+  assert.equal(result.attended, 15);
+});
+
+test('resolveBackfillCounts: clamps bunked count to never exceed pending count', () => {
+  const result = engine.resolveBackfillCounts(10, 50);
+  assert.equal(result.bunked, 10);
+  assert.equal(result.attended, 0);
+});
+
+test('resolveBackfillCounts: negative or non-numeric input treated as zero', () => {
+  assert.deepEqual(engine.resolveBackfillCounts(10, -3), { bunked: 0, attended: 10 });
+  assert.deepEqual(engine.resolveBackfillCounts(10, NaN), { bunked: 0, attended: 10 });
+});
+
+test('resolveBackfillCounts: zero pending lectures always resolves to zero/zero', () => {
+  assert.deepEqual(engine.resolveBackfillCounts(0, 5), { bunked: 0, attended: 0 });
+});
+
 test('pending lectures are excluded from calculations', () => {
   const records = [{ status: 'pending' }, { status: 'attended' }];
   const s = engine.summarize(records);

@@ -112,6 +112,101 @@ const markDay = asyncHandler(async (req, res) => {
   res.json({ lectures: updated });
 });
 
+/**
+ * Generates any missing 'pending' LectureRecords for one subject across its
+ * whole history so far (semester start -> today), from the weekly
+ * timetable template — the same generation rule ensureLecturesForDate uses
+ * per-day, just applied across a range for a single subject. Idempotent
+ * (unique index + insertMany ordered:false swallows duplicate-key races),
+ * so it's safe to call every time a backfill is requested.
+ */
+async function backfillSubjectLectures(user, subject, semester) {
+  const slots = await TimetableSlot.find({ user: user._id, semester: semester._id, subject: subject._id });
+  if (!slots.length) return;
+
+  const slotsByDay = new Map();
+  for (const slot of slots) {
+    if (!slotsByDay.has(slot.day)) slotsByDay.set(slot.day, []);
+    slotsByDay.get(slot.day).push(slot);
+  }
+
+  const start = startOfDay(semester.startDate);
+  const end = startOfDay(new Date());
+  const holidays = await Holiday.find({ user: user._id, date: { $gte: start, $lte: end } }).lean();
+  const holidaySet = new Set(holidays.map((h) => startOfDay(h.date).toISOString().slice(0, 10)));
+
+  const toCreate = [];
+  for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+    const dayName = DAY_NAMES[d.getDay()];
+    const daySlots = slotsByDay.get(dayName);
+    if (!daySlots) continue;
+
+    const isHoliday = holidaySet.has(d.toISOString().slice(0, 10));
+    for (const slot of daySlots) {
+      toCreate.push({
+        user: user._id,
+        semester: semester._id,
+        subject: subject._id,
+        facultyName: subject.facultyName,
+        date: new Date(d),
+        lectureNumber: slot.lectureNumber,
+        status: isHoliday ? 'holiday' : 'pending',
+        sourceSlot: slot._id,
+      });
+    }
+  }
+
+  if (toCreate.length) {
+    await LectureRecord.insertMany(toCreate, { ordered: false }).catch((err) => {
+      if (err.code !== 11000) throw err;
+    });
+  }
+}
+
+/**
+ * Quick Bunk Backfill: user only remembers HOW MANY lectures of a subject
+ * they bunked, not which specific dates. Backfills real lecture records for
+ * every past date that subject was on the timetable, then resolves the
+ * still-pending ones into bunked/attended via attendanceEngine — so the
+ * result is ordinary LectureRecord data, correctly reflected everywhere
+ * (calendar, monthly report, overview) with no separate running total.
+ */
+const backfillBunks = asyncHandler(async (req, res) => {
+  const { bunked } = req.body;
+  const subject = await Subject.findOne({ _id: req.params.subjectId, user: req.user._id });
+  if (!subject) throw new ApiError(404, 'Subject not found');
+
+  const semester = await Semester.findById(req.user.currentSemester);
+  if (!semester) throw new ApiError(400, 'No active semester');
+
+  await backfillSubjectLectures(req.user, subject, semester);
+
+  const pending = await LectureRecord.find({ user: req.user._id, subject: subject._id, status: 'pending' }).sort({
+    date: 1,
+    lectureNumber: 1,
+  });
+
+  const resolved = engine.resolveBackfillCounts(pending.length, Number(bunked));
+  const bunkedIds = pending.slice(0, resolved.bunked).map((r) => r._id);
+  const attendedIds = pending.slice(resolved.bunked).map((r) => r._id);
+
+  await Promise.all([
+    bunkedIds.length ? LectureRecord.updateMany({ _id: { $in: bunkedIds } }, { status: 'bunked', markedAt: new Date() }) : null,
+    attendedIds.length
+      ? LectureRecord.updateMany({ _id: { $in: attendedIds } }, { status: 'attended', markedAt: new Date() })
+      : null,
+  ]);
+
+  res.json({
+    subject: { id: subject._id, name: subject.name },
+    totalResolved: pending.length,
+    bunked: resolved.bunked,
+    attended: resolved.attended,
+    requestedBunked: Number(bunked),
+    clamped: resolved.bunked !== Number(bunked),
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Analytics endpoints — all delegate their math to attendanceEngine.js
 // ---------------------------------------------------------------------------
@@ -318,6 +413,7 @@ module.exports = {
   addExtraLecture,
   markLecture,
   markDay,
+  backfillBunks,
   overview,
   subjectAnalytics,
   facultyAnalytics,

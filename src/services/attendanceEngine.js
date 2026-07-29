@@ -215,6 +215,22 @@ function dayOfWeekBunkPattern(records) {
   return { byDay, worstDay, worstBunkRate: worstDay === null ? 0 : round2(worstBunkRate * 100) };
 }
 
+/**
+ * Quick Bunk Backfill: a user who didn't mark attendance day-by-day often
+ * only remembers HOW MANY lectures of a subject they bunked, not which
+ * specific dates. Given the count of still-`pending` lecture records for
+ * that subject (already generated for real past dates from the timetable)
+ * and how many of those the user says were bunked, this resolves how many
+ * should be marked 'bunked' vs 'attended' — clamped so it can never exceed
+ * what's actually available, so the caller can safely apply it without a
+ * separate validation pass.
+ */
+function resolveBackfillCounts(pendingCount, bunkedCount) {
+  const bunked = Math.max(0, Math.min(Math.floor(bunkedCount) || 0, pendingCount));
+  const attended = pendingCount - bunked;
+  return { bunked, attended };
+}
+
 module.exports = {
   COUNTS_AS_CONDUCTED,
   COUNTS_AS_ATTENDED,
@@ -228,5 +244,6 @@ module.exports = {
   simulateFuture,
   classify,
   dayOfWeekBunkPattern,
+  resolveBackfillCounts,
   round2,
 };

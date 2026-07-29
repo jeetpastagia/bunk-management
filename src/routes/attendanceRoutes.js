@@ -33,6 +33,13 @@ router.post(
   ctrl.markDay
 );
 
+router.post(
+  '/subjects/:subjectId/backfill-bunks',
+  [param('subjectId').isMongoId(), body('bunked').isInt({ min: 0 })],
+  validate,
+  ctrl.backfillBunks
+);
+
 router.get('/overview', ctrl.overview);
 router.get('/subjects', ctrl.subjectAnalytics);
 router.get('/faculty', ctrl.facultyAnalytics);
