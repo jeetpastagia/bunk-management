@@ -16,12 +16,11 @@ const create = asyncHandler(async (req, res) => {
 
   const holiday = await Holiday.create({ user: req.user._id, date: day, name, type });
 
-  // Retroactively mark any already-generated lecture records that day as holiday
-  // so it never affects attendance, per spec ("Holiday lectures should not affect attendance").
-  await LectureRecord.updateMany(
-    { user: req.user._id, date: day, status: { $in: ['pending'] } },
-    { status: 'holiday' }
-  );
+  // Retroactively neutralize every lecture record that date — including ones
+  // already marked attended/bunked/extra before the holiday was declared —
+  // so a holiday always fully removes that day from attendance calculations,
+  // per spec ("Holiday lectures should not affect attendance").
+  await LectureRecord.updateMany({ user: req.user._id, date: day }, { status: 'holiday' });
 
   res.status(201).json({ holiday });
 });
@@ -34,6 +33,11 @@ const list = asyncHandler(async (req, res) => {
 const remove = asyncHandler(async (req, res) => {
   const holiday = await Holiday.findOneAndDelete({ _id: req.params.id, user: req.user._id });
   if (!holiday) throw new ApiError(404, 'Holiday not found');
+
+  // Un-neutralize: records that were only 'holiday' because of this entry
+  // go back to markable 'pending' now that the day is a normal day again.
+  await LectureRecord.updateMany({ user: req.user._id, date: holiday.date, status: 'holiday' }, { status: 'pending' });
+
   res.json({ message: 'Holiday removed' });
 });
 
