@@ -1,0 +1,330 @@
+'use strict';
+
+const LectureRecord = require('../models/LectureRecord');
+const TimetableSlot = require('../models/TimetableSlot');
+const Subject = require('../models/Subject');
+const Holiday = require('../models/Holiday');
+const Semester = require('../models/Semester');
+const engine = require('../services/attendanceEngine');
+const { ApiError, asyncHandler } = require('../middleware/errorHandler');
+
+const DAY_NAMES = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+
+function startOfDay(date) {
+  const d = new Date(date);
+  d.setHours(0, 0, 0, 0);
+  return d;
+}
+function endOfDay(date) {
+  const d = new Date(date);
+  d.setHours(23, 59, 59, 999);
+  return d;
+}
+
+/**
+ * Ensures LectureRecord documents exist for the given date, generated from
+ * the weekly timetable template. Idempotent: safe to call every time a
+ * date is opened. If the date is a holiday, records are created with
+ * status 'holiday' so the day still shows up but never affects attendance.
+ */
+async function ensureLecturesForDate(user, date) {
+  const day = startOfDay(date);
+  const dayName = DAY_NAMES[day.getDay()];
+
+  const [slots, holiday, existing] = await Promise.all([
+    TimetableSlot.find({ user: user._id, semester: user.currentSemester, day: dayName }).populate('subject'),
+    Holiday.findOne({ user: user._id, date: day }),
+    LectureRecord.find({ user: user._id, date: day }),
+  ]);
+
+  const existingByLectureNumber = new Map(existing.map((r) => [r.lectureNumber, r]));
+  const toCreate = [];
+
+  for (const slot of slots) {
+    if (existingByLectureNumber.has(slot.lectureNumber)) continue;
+    toCreate.push({
+      user: user._id,
+      semester: user.currentSemester,
+      subject: slot.subject._id,
+      facultyName: slot.subject.facultyName,
+      date: day,
+      lectureNumber: slot.lectureNumber,
+      status: holiday ? 'holiday' : 'pending',
+      sourceSlot: slot._id,
+    });
+  }
+
+  if (toCreate.length) {
+    await LectureRecord.insertMany(toCreate, { ordered: false }).catch((err) => {
+      // Duplicate-key races (e.g. two rapid requests) are safe to ignore here.
+      if (err.code !== 11000) throw err;
+    });
+  }
+
+  return LectureRecord.find({ user: user._id, date: day }).populate('subject', 'name code facultyName').sort({ lectureNumber: 1 });
+}
+
+const getDayLectures = asyncHandler(async (req, res) => {
+  const { date } = req.params;
+  const records = await ensureLecturesForDate(req.user, new Date(date));
+  res.json({ date, lectures: records });
+});
+
+/** Extra lecture: not on the regular timetable but held anyway. */
+const addExtraLecture = asyncHandler(async (req, res) => {
+  const { date, subject, lectureNumber, status } = req.body;
+  const subj = await Subject.findOne({ _id: subject, user: req.user._id });
+  if (!subj) throw new ApiError(404, 'Subject not found');
+
+  const record = await LectureRecord.create({
+    user: req.user._id,
+    semester: req.user.currentSemester,
+    subject: subj._id,
+    facultyName: subj.facultyName,
+    date: startOfDay(date),
+    lectureNumber,
+    status: status || 'extra',
+    markedAt: new Date(),
+  });
+
+  res.status(201).json({ lecture: record });
+});
+
+/** Mark one lecture's status: attended / bunked / holiday / cancelled / extra. */
+const markLecture = asyncHandler(async (req, res) => {
+  const { status } = req.body;
+  const record = await LectureRecord.findOneAndUpdate(
+    { _id: req.params.id, user: req.user._id },
+    { status, markedAt: new Date() },
+    { new: true, runValidators: true }
+  );
+  if (!record) throw new ApiError(404, 'Lecture record not found');
+  res.json({ lecture: record });
+});
+
+/** Bulk-mark every lecture on a given date (e.g. "Mark whole day attended"). */
+const markDay = asyncHandler(async (req, res) => {
+  const { date, status } = req.body;
+  const records = await ensureLecturesForDate(req.user, new Date(date));
+  const ids = records.map((r) => r._id);
+  await LectureRecord.updateMany({ _id: { $in: ids } }, { status, markedAt: new Date() });
+  const updated = await LectureRecord.find({ _id: { $in: ids } }).populate('subject', 'name');
+  res.json({ lectures: updated });
+});
+
+// ---------------------------------------------------------------------------
+// Analytics endpoints — all delegate their math to attendanceEngine.js
+// ---------------------------------------------------------------------------
+
+async function semesterRecords(user, semesterId) {
+  return LectureRecord.find({ user: user._id, semester: semesterId }).lean();
+}
+
+const overview = asyncHandler(async (req, res) => {
+  const semester = await Semester.findById(req.user.currentSemester);
+  if (!semester) throw new ApiError(400, 'No active semester');
+
+  const records = await semesterRecords(req.user, semester._id);
+  const overall = engine.summarize(records);
+
+  const now = new Date();
+  const monthRecords = records.filter((r) => {
+    const d = new Date(r.date);
+    return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
+  });
+  const monthly = engine.summarize(monthRecords);
+
+  const requiredPct = semester.requiredAttendancePercentage;
+  const safeBunks = engine.safeBunksRemaining(overall.attended, overall.conducted, requiredPct);
+  const neededFor75 = engine.lecturesNeededForTarget(overall.attended, overall.conducted, requiredPct);
+
+  const todayRecords = await ensureLecturesForDate(req.user, now);
+  const todayAttendance = engine.summarize(todayRecords);
+
+  res.json({
+    overall,
+    monthly,
+    requiredAttendancePercentage: requiredPct,
+    danger: overall.percentage < requiredPct,
+    monthlyDanger: monthly.percentage < requiredPct,
+    safeBunksRemaining: safeBunks,
+    lecturesNeededForTarget: neededFor75,
+    today: {
+      lectures: todayRecords,
+      summary: todayAttendance,
+    },
+  });
+});
+
+const subjectAnalytics = asyncHandler(async (req, res) => {
+  const semester = await Semester.findById(req.user.currentSemester);
+  const records = await semesterRecords(req.user, semester._id);
+  const subjects = await Subject.find({ user: req.user._id, semester: semester._id });
+
+  const bySubjectId = engine.groupSummarize(records, (r) => r.subject.toString());
+
+  const result = subjects.map((s) => {
+    const stats = bySubjectId[s._id.toString()] || engine.summarize([]);
+    return {
+      subject: { id: s._id, name: s.name, code: s.code, facultyName: s.facultyName },
+      ...stats,
+      safeBunksRemaining: engine.safeBunksRemaining(stats.attended, stats.conducted, semester.requiredAttendancePercentage),
+      lecturesNeeded: engine.lecturesNeededForTarget(stats.attended, stats.conducted, semester.requiredAttendancePercentage),
+    };
+  });
+
+  res.json({ subjects: result });
+});
+
+const facultyAnalytics = asyncHandler(async (req, res) => {
+  const semester = await Semester.findById(req.user.currentSemester);
+  const records = await semesterRecords(req.user, semester._id);
+
+  const byFaculty = engine.groupSummarize(records, (r) => r.facultyName || 'Unknown');
+  const ranked = Object.entries(byFaculty)
+    .map(([facultyName, stats]) => ({ facultyName, ...stats }))
+    .sort((a, b) => b.percentage - a.percentage);
+
+  res.json({
+    faculty: ranked,
+    mostAttended: ranked[0] || null,
+    mostBunked: [...ranked].sort((a, b) => b.bunked - a.bunked)[0] || null,
+  });
+});
+
+const monthlyReport = asyncHandler(async (req, res) => {
+  const semester = await Semester.findById(req.user.currentSemester);
+  const records = await semesterRecords(req.user, semester._id);
+
+  const byMonth = engine.groupSummarize(records, (r) => {
+    const d = new Date(r.date);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+  });
+
+  res.json({ months: byMonth });
+});
+
+const calendar = asyncHandler(async (req, res) => {
+  const { month, year } = req.query; // month: 1-12
+  if (!month || !year) throw new ApiError(400, 'month and year query params are required');
+
+  const start = new Date(Number(year), Number(month) - 1, 1);
+  const end = new Date(Number(year), Number(month), 0, 23, 59, 59, 999);
+
+  const records = await LectureRecord.find({
+    user: req.user._id,
+    date: { $gte: start, $lte: end },
+  }).lean();
+
+  const byDate = engine.groupSummarize(records, (r) => new Date(r.date).toISOString().slice(0, 10));
+
+  // Color classification per spec: Green=attended day, Red=bunked present, Grey=holiday, Blue=today
+  const todayStr = startOfDay(new Date()).toISOString().slice(0, 10);
+  const days = Object.entries(byDate).map(([date, stats]) => {
+    let color = 'green';
+    if (stats.conducted === 0) color = 'grey'; // fully holiday/cancelled day
+    else if (stats.bunked > 0) color = 'red';
+    if (date === todayStr) color = 'blue';
+    return { date, ...stats, color };
+  });
+
+  res.json({ days });
+});
+
+// ---------------------------------------------------------------------------
+// Smart Calculator / Predictor / Simulator
+// ---------------------------------------------------------------------------
+
+const smartCalculator = asyncHandler(async (req, res) => {
+  const semester = await Semester.findById(req.user.currentSemester);
+  const records = await semesterRecords(req.user, semester._id);
+  const { attended, conducted } = engine.summarize(records);
+
+  res.json({
+    current: engine.summarize(records),
+    nextLectureProjection: engine.projectNextLecture(attended, conducted),
+    lecturesNeededForTargets: engine.lecturesNeededForTargets(attended, conducted, [75, 80, 85, 90]),
+    safeBunksRemaining: engine.safeBunksRemaining(attended, conducted, semester.requiredAttendancePercentage),
+  });
+});
+
+/**
+ * Future Lecture Simulator: reads the timetable for the given future date
+ * and simulates bunking vs attending every lecture that day.
+ */
+const futureSimulator = asyncHandler(async (req, res) => {
+  const { date } = req.query;
+  if (!date) throw new ApiError(400, 'date query param is required');
+
+  const semester = await Semester.findById(req.user.currentSemester);
+  const records = await semesterRecords(req.user, semester._id);
+  const { attended, conducted } = engine.summarize(records);
+
+  const day = startOfDay(new Date(date));
+  const dayName = DAY_NAMES[day.getDay()];
+  const [slots, holiday] = await Promise.all([
+    TimetableSlot.find({ user: req.user._id, semester: semester._id, day: dayName }),
+    Holiday.findOne({ user: req.user._id, date: day }),
+  ]);
+
+  const upcomingCount = holiday ? 0 : slots.length;
+  const simulation = engine.simulateFuture(attended, conducted, upcomingCount, semester.requiredAttendancePercentage);
+
+  res.json({ date, upcomingLectureCount: upcomingCount, isHoliday: !!holiday, ...simulation });
+});
+
+/** AI Smart Insights: rule-based, generated from real attendance data (no external AI call needed). */
+const insights = asyncHandler(async (req, res) => {
+  const semester = await Semester.findById(req.user.currentSemester);
+  const records = await semesterRecords(req.user, semester._id);
+  const requiredPct = semester.requiredAttendancePercentage;
+
+  const overall = engine.summarize(records);
+  const bySubject = engine.groupSummarize(records, (r) => r.subject.toString());
+  const subjects = await Subject.find({ user: req.user._id, semester: semester._id });
+  const subjectNameById = new Map(subjects.map((s) => [s._id.toString(), s.name]));
+
+  const messages = [];
+
+  const safeBunks = engine.safeBunksRemaining(overall.attended, overall.conducted, requiredPct);
+  if (safeBunks > 0) messages.push(`You can safely bunk ${safeBunks} more lecture(s) and stay above ${requiredPct}%.`);
+
+  const needed = engine.lecturesNeededForTarget(overall.attended, overall.conducted, requiredPct);
+  if (needed > 0) messages.push(`Attend the next ${needed} lecture(s) to reach ${requiredPct}%.`);
+
+  for (const [subjectId, stats] of Object.entries(bySubject)) {
+    const name = subjectNameById.get(subjectId) || 'A subject';
+    if (stats.conducted >= 3 && stats.percentage < requiredPct) {
+      messages.push(`${name} attendance is low (${stats.percentage}%).`);
+    } else if (stats.conducted >= 3 && stats.percentage >= 95) {
+      messages.push(`${name} attendance is excellent (${stats.percentage}%).`);
+    }
+  }
+
+  const dayPattern = engine.dayOfWeekBunkPattern(records);
+  if (dayPattern.worstDay !== null && dayPattern.worstBunkRate > 0) {
+    const dayNameCap = DAY_NAMES[dayPattern.worstDay];
+    messages.push(`${dayNameCap.charAt(0).toUpperCase() + dayNameCap.slice(1)} has your highest bunk rate.`);
+  }
+
+  const proj = engine.projectNextLecture(overall.attended, overall.conducted);
+  messages.push(`If you bunk your next lecture, attendance becomes ${proj.ifBunked}%.`);
+
+  res.json({ insights: messages });
+});
+
+module.exports = {
+  getDayLectures,
+  addExtraLecture,
+  markLecture,
+  markDay,
+  overview,
+  subjectAnalytics,
+  facultyAnalytics,
+  monthlyReport,
+  calendar,
+  smartCalculator,
+  futureSimulator,
+  insights,
+  _internal: { ensureLecturesForDate, startOfDay, endOfDay },
+};
