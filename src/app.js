@@ -20,6 +20,12 @@ const notificationRoutes = require('./routes/notificationRoutes');
 function createApp() {
   const app = express();
 
+  // Render/Vercel/most PaaS put the app behind a reverse proxy that sets
+  // X-Forwarded-For. Without this, express-rate-limit can't correctly
+  // identify the real client IP (it'd otherwise rate-limit everyone
+  // together as the proxy's IP, or throw validation errors per request).
+  app.set('trust proxy', 1);
+
   app.use(helmet());
   app.use(cors());
   app.use(compression());
