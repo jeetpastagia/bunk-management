@@ -50,11 +50,12 @@ const userSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-userSchema.pre('validate', function enforceIdentifier(next) {
+// Mongoose 7+ dropped the callback-style next() for hooks like this one —
+// synchronous hooks just run and return, no next() call needed (or possible).
+userSchema.pre('validate', function enforceIdentifier() {
   if (!this.email && !this.mobileNumber && !this.googleId) {
     this.invalidate('email', 'Either an email, a mobile number, or a Google account is required');
   }
-  next();
 });
 
 userSchema.methods.setPassword = async function setPassword(plainPassword) {
