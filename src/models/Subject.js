@@ -12,6 +12,10 @@ const subjectSchema = new mongoose.Schema(
     credits: { type: Number, min: 0 },
     weeklyLectureCount: { type: Number, min: 0, default: 0 },
     isActive: { type: Boolean, default: true },
+    // Set when this subject was copied in via a Room join/sync (see
+    // services/roomService.js) rather than added by hand — lets the sync
+    // tell "still matches the room's template" apart from "user's own".
+    syncedFromRoom: { type: mongoose.Schema.Types.ObjectId, ref: 'Room' },
   },
   { timestamps: true }
 );

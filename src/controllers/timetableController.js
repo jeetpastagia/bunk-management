@@ -3,6 +3,7 @@
 const TimetableSlot = require('../models/TimetableSlot');
 const Subject = require('../models/Subject');
 const { ApiError, asyncHandler } = require('../middleware/errorHandler');
+const roomService = require('../services/roomService');
 
 /** Replace the entire weekly timetable in one call (typical "manual setup" UX). */
 const setTimetable = asyncHandler(async (req, res) => {
@@ -32,6 +33,7 @@ const setTimetable = asyncHandler(async (req, res) => {
   }));
 
   const created = docs.length ? await TimetableSlot.insertMany(docs) : [];
+  await roomService.syncOwnedRoomsForSemester(req.user._id, req.user.currentSemester);
   res.status(201).json({ slots: created });
 });
 

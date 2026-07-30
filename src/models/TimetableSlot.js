@@ -19,6 +19,7 @@ const timetableSlotSchema = new mongoose.Schema(
     subject: { type: mongoose.Schema.Types.ObjectId, ref: 'Subject', required: true },
     startTime: { type: String }, // "HH:mm", optional
     endTime: { type: String }, // "HH:mm", optional
+    syncedFromRoom: { type: mongoose.Schema.Types.ObjectId, ref: 'Room' },
   },
   { timestamps: true }
 );

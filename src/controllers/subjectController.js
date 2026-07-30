@@ -4,9 +4,11 @@ const Subject = require('../models/Subject');
 const TimetableSlot = require('../models/TimetableSlot');
 const LectureRecord = require('../models/LectureRecord');
 const { ApiError, asyncHandler } = require('../middleware/errorHandler');
+const roomService = require('../services/roomService');
 
 const create = asyncHandler(async (req, res) => {
   const subject = await Subject.create({ ...req.body, user: req.user._id, semester: req.user.currentSemester });
+  await roomService.syncOwnedRoomsForSemester(req.user._id, req.user.currentSemester);
   res.status(201).json({ subject });
 });
 
@@ -19,6 +21,7 @@ const bulkCreate = asyncHandler(async (req, res) => {
 
   const docs = subjects.map((s) => ({ ...s, user: req.user._id, semester: req.user.currentSemester }));
   const created = await Subject.insertMany(docs, { ordered: false });
+  await roomService.syncOwnedRoomsForSemester(req.user._id, req.user.currentSemester);
   res.status(201).json({ subjects: created, count: created.length });
 });
 
@@ -38,6 +41,7 @@ const update = asyncHandler(async (req, res) => {
     { new: true, runValidators: true }
   );
   if (!subject) throw new ApiError(404, 'Subject not found');
+  await roomService.syncOwnedRoomsForSemester(req.user._id, req.user.currentSemester);
   res.json({ subject });
 });
 
@@ -51,6 +55,7 @@ const remove = asyncHandler(async (req, res) => {
     LectureRecord.deleteMany({ user: req.user._id, subject: subject._id }),
     subject.deleteOne(),
   ]);
+  await roomService.syncOwnedRoomsForSemester(req.user._id, req.user.currentSemester);
 
   res.json({ message: 'Subject and its dependent timetable/attendance data removed' });
 });

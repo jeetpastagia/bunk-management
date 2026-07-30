@@ -129,7 +129,19 @@ test('models load and compile without schema errors', () => {
     require('../src/models/LectureRecord');
     require('../src/models/Holiday');
     require('../src/models/Notification');
+    require('../src/models/Room');
+    require('../src/models/RoomMembership');
   });
+});
+
+test('room routes require auth', async () => {
+  const app = createApp();
+  const list = await request(app, 'GET', '/api/rooms');
+  assert.equal(list.status, 401);
+  const create = await request(app, 'POST', '/api/rooms', { name: 'CS-A' });
+  assert.equal(create.status, 401);
+  const join = await request(app, 'POST', '/api/rooms/join', { code: 'ABC123' });
+  assert.equal(join.status, 401);
 });
 
 test('notification routes require auth', async () => {
