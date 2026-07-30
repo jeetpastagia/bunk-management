@@ -87,6 +87,21 @@ const me = asyncHandler(async (req, res) => {
   res.json({ user: req.user.toSafeJSON() });
 });
 
+const updateMe = asyncHandler(async (req, res) => {
+  const { studentName, mobileNumber, collegeName } = req.body;
+
+  if (mobileNumber && mobileNumber !== req.user.mobileNumber) {
+    const existing = await User.findOne({ mobileNumber });
+    if (existing) throw new ApiError(409, 'That mobile number is already in use by another account');
+    req.user.mobileNumber = mobileNumber;
+  }
+  if (studentName !== undefined) req.user.studentName = studentName;
+  if (collegeName !== undefined) req.user.collegeName = collegeName;
+
+  await req.user.save();
+  res.json({ user: req.user.toSafeJSON() });
+});
+
 const logout = asyncHandler(async (req, res) => {
   // Stateless JWT: logout is a client-side token discard. If a device
   // token was supplied, unregister it from push notifications.
@@ -98,4 +113,4 @@ const logout = asyncHandler(async (req, res) => {
   res.json({ message: 'Logged out' });
 });
 
-module.exports = { signup, login, requestOtp, resetPasswordWithOtp, me, logout };
+module.exports = { signup, login, requestOtp, resetPasswordWithOtp, me, updateMe, logout };

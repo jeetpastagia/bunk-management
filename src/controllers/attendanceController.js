@@ -131,7 +131,13 @@ async function backfillSubjectLectures(user, subject, semester) {
   }
 
   const start = startOfDay(semester.startDate);
+  // Stop at YESTERDAY, never today — today's lecture(s) must stay whatever
+  // they currently are (usually 'pending') and only get marked through the
+  // normal Dashboard/Attendance flow once the user actually attends them.
+  // A "past history" tool has no business deciding today's attendance.
   const end = startOfDay(new Date());
+  end.setDate(end.getDate() - 1);
+  if (end < start) return;
   const holidays = await Holiday.find({ user: user._id, date: { $gte: start, $lte: end } }).lean();
   const holidaySet = new Set(holidays.map((h) => startOfDay(h.date).toISOString().slice(0, 10)));
 
@@ -181,10 +187,15 @@ const backfillBunks = asyncHandler(async (req, res) => {
 
   await backfillSubjectLectures(req.user, subject, semester);
 
-  const pending = await LectureRecord.find({ user: req.user._id, subject: subject._id, status: 'pending' }).sort({
-    date: 1,
-    lectureNumber: 1,
-  });
+  // Defensive re-check: never touch today's (or any future) lecture here,
+  // even if one already existed as 'pending' from elsewhere (e.g. the
+  // Dashboard generates today's records on every visit).
+  const pending = await LectureRecord.find({
+    user: req.user._id,
+    subject: subject._id,
+    status: 'pending',
+    date: { $lt: startOfDay(new Date()) },
+  }).sort({ date: 1, lectureNumber: 1 });
 
   const resolved = engine.resolveBackfillCounts(pending.length, Number(bunked));
   const bunkedIds = pending.slice(0, resolved.bunked).map((r) => r._id);

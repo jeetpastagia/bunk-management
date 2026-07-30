@@ -49,6 +49,17 @@ router.post(
 );
 
 router.get('/me', requireAuth, ctrl.me);
+router.put(
+  '/me',
+  requireAuth,
+  [
+    body('studentName').optional().trim().isLength({ min: 1 }),
+    body('mobileNumber').optional().trim().matches(/^\+?[0-9]{10,15}$/).withMessage('Enter a valid mobile number'),
+    body('collegeName').optional().trim(),
+  ],
+  validate,
+  ctrl.updateMe
+);
 router.post('/logout', requireAuth, ctrl.logout);
 
 module.exports = router;
