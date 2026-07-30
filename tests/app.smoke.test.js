@@ -134,6 +134,34 @@ test('models load and compile without schema errors', () => {
   });
 });
 
+test('User model: pre-validate hook runs without a live DB connection (regression: Mongoose 7+ dropped callback-style next())', async () => {
+  // .validate() (not validateSync(), which does NOT run pre/post 'validate'
+  // middleware in this Mongoose version) runs schema validators + hooks
+  // fully in-memory, no DB round-trip needed — this is exactly the code
+  // path that crashed signup with "TypeError: next is not a function"
+  // before the hook was fixed to not accept/call a next() callback.
+  const User = require('../src/models/User');
+
+  const nothing = new User({ passwordHash: 'x' });
+  await assert.rejects(() => nothing.validate(), 'a user with no email/mobileNumber/googleId should fail validation');
+
+  const withEmail = new User({ email: 'student@example.com', passwordHash: 'x' });
+  await assert.doesNotReject(() => withEmail.validate());
+
+  const withMobile = new User({ mobileNumber: '9876543210', passwordHash: 'x' });
+  await assert.doesNotReject(() => withMobile.validate());
+
+  const withGoogleId = new User({ googleId: 'abc123' });
+  await assert.doesNotReject(() => withGoogleId.validate());
+});
+
+test('google auth rejects a missing credential before calling Google', async () => {
+  const app = createApp();
+  const res = await request(app, 'POST', '/api/auth/google', {});
+  assert.equal(res.status, 400);
+  assert.equal(res.body.error, 'Validation failed');
+});
+
 test('room routes require auth', async () => {
   const app = createApp();
   const list = await request(app, 'GET', '/api/rooms');
