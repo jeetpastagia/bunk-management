@@ -9,16 +9,15 @@ const { authLimiter } = require('../middleware/rateLimiters');
 
 const router = express.Router();
 
-const mobileRule = body('mobileNumber')
-  .trim()
-  .matches(/^\+?[0-9]{10,15}$/)
-  .withMessage('Enter a valid mobile number');
+// Format itself (email vs phone) is validated inside the controller via
+// classifyIdentifier — here we only guard against an empty/missing field.
+const identifierRule = body('identifier').trim().notEmpty().withMessage('Enter your email or mobile number');
 
 router.post(
   '/signup',
   authLimiter,
   [
-    mobileRule,
+    identifierRule,
     body('password').isLength({ min: 6 }).withMessage('Password must be at least 6 characters'),
     body('studentName').optional().trim().isLength({ min: 1 }),
   ],
@@ -29,18 +28,20 @@ router.post(
 router.post(
   '/login',
   authLimiter,
-  [mobileRule, body('password').notEmpty()],
+  [identifierRule, body('password').notEmpty()],
   validate,
   ctrl.login
 );
 
-router.post('/forgot-password/request-otp', authLimiter, [mobileRule], validate, ctrl.requestOtp);
+router.post('/google', authLimiter, [body('credential').notEmpty()], validate, ctrl.googleAuth);
+
+router.post('/forgot-password/request-otp', authLimiter, [identifierRule], validate, ctrl.requestOtp);
 
 router.post(
   '/forgot-password/reset',
   authLimiter,
   [
-    mobileRule,
+    identifierRule,
     body('otp').isLength({ min: 6, max: 6 }).withMessage('OTP must be 6 digits'),
     body('newPassword').isLength({ min: 6 }),
   ],
@@ -55,6 +56,7 @@ router.put(
   [
     body('studentName').optional().trim().isLength({ min: 1 }),
     body('mobileNumber').optional().trim().matches(/^\+?[0-9]{10,15}$/).withMessage('Enter a valid mobile number'),
+    body('email').optional().trim().isEmail().withMessage('Enter a valid email address'),
     body('collegeName').optional().trim(),
   ],
   validate,

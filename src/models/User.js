@@ -2,19 +2,31 @@
 
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
+const { EMAIL_PATTERN, PHONE_PATTERN } = require('../utils/identifier');
 
 const userSchema = new mongoose.Schema(
   {
     studentName: { type: String, trim: true },
+    // A user has at least one of these (enforced below), set from whichever
+    // they signed up with via the combined email/phone login box.
     mobileNumber: {
       type: String,
-      required: true,
       unique: true,
+      sparse: true,
       trim: true,
-      match: [/^\+?[0-9]{10,15}$/, 'Enter a valid mobile number'],
+      match: [PHONE_PATTERN, 'Enter a valid mobile number'],
       index: true,
     },
-    passwordHash: { type: String, required: true, select: false },
+    email: {
+      type: String,
+      unique: true,
+      sparse: true,
+      trim: true,
+      lowercase: true,
+      match: [EMAIL_PATTERN, 'Enter a valid email address'],
+    },
+    googleId: { type: String, unique: true, sparse: true, index: true },
+    passwordHash: { type: String, select: false }, // not required: Google sign-in accounts have no password
 
     // First-time setup fields
     collegeName: { type: String, trim: true },
@@ -38,12 +50,20 @@ const userSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+userSchema.pre('validate', function enforceIdentifier(next) {
+  if (!this.email && !this.mobileNumber && !this.googleId) {
+    this.invalidate('email', 'Either an email, a mobile number, or a Google account is required');
+  }
+  next();
+});
+
 userSchema.methods.setPassword = async function setPassword(plainPassword) {
   const salt = await bcrypt.genSalt(12);
   this.passwordHash = await bcrypt.hash(plainPassword, salt);
 };
 
 userSchema.methods.comparePassword = function comparePassword(plainPassword) {
+  if (!this.passwordHash) return false; // Google-only account, no password set
   return bcrypt.compare(plainPassword, this.passwordHash);
 };
 

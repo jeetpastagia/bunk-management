@@ -4,27 +4,43 @@ const crypto = require('crypto');
 const User = require('../models/User');
 const { signToken } = require('../middleware/auth');
 const { ApiError, asyncHandler } = require('../middleware/errorHandler');
+const { classifyIdentifier } = require('../utils/identifier');
 
 /**
- * OTP delivery is intentionally abstracted behind this function. Wire it
- * to an SMS provider (Twilio, MSG91, etc.) in production. For now it logs
- * the OTP server-side so the flow is fully testable end-to-end without a
- * paid SMS account.
+ * OTP delivery is intentionally abstracted behind these two functions —
+ * wire an SMS provider (Twilio, MSG91) and an email provider (Resend,
+ * SES, SMTP) in production. For now both just log server-side so the
+ * flow is fully testable end-to-end without a paid account for either.
  */
-async function deliverOtp(mobileNumber, code) {
+async function deliverOtpSms(mobileNumber, code) {
   // eslint-disable-next-line no-console
-  console.log(`[OTP] Sending ${code} to ${mobileNumber} (wire a real SMS provider here)`);
+  console.log(`[OTP] Sending ${code} to ${mobileNumber} via SMS (wire a real SMS provider here)`);
+}
+async function deliverOtpEmail(email, code) {
+  // eslint-disable-next-line no-console
+  console.log(`[OTP] Sending ${code} to ${email} via email (wire a real email provider here)`);
+}
+
+/** Looks up a user by whichever identifier type they entered. Returns null if the input matches neither format. */
+function findUserByIdentifier(identifier) {
+  const classified = classifyIdentifier(identifier);
+  if (classified.type === 'email') return { user: User.findOne({ email: classified.value }), classified };
+  if (classified.type === 'phone') return { user: User.findOne({ mobileNumber: classified.value }), classified };
+  return { user: null, classified };
 }
 
 const signup = asyncHandler(async (req, res) => {
-  const { mobileNumber, password, studentName } = req.body;
+  const { identifier, password, studentName } = req.body;
+  const classified = classifyIdentifier(identifier);
+  if (!classified.type) throw new ApiError(400, 'Enter a valid email address or mobile number');
 
-  const existing = await User.findOne({ mobileNumber });
+  const field = classified.type === 'email' ? 'email' : 'mobileNumber';
+  const existing = await User.findOne({ [field]: classified.value });
   if (existing) {
-    throw new ApiError(409, 'An account with this mobile number already exists');
+    throw new ApiError(409, 'An account with this email or mobile number already exists');
   }
 
-  const user = new User({ mobileNumber, studentName });
+  const user = new User({ [field]: classified.value, studentName });
   await user.setPassword(password);
   await user.save();
 
@@ -33,11 +49,12 @@ const signup = asyncHandler(async (req, res) => {
 });
 
 const login = asyncHandler(async (req, res) => {
-  const { mobileNumber, password } = req.body;
+  const { identifier, password } = req.body;
+  const { user: userQuery } = findUserByIdentifier(identifier);
 
-  const user = await User.findOne({ mobileNumber }).select('+passwordHash');
+  const user = userQuery ? await userQuery.select('+passwordHash') : null;
   if (!user || !(await user.comparePassword(password))) {
-    throw new ApiError(401, 'Invalid mobile number or password');
+    throw new ApiError(401, 'Invalid email/mobile number or password');
   }
   if (!user.isActive) {
     throw new ApiError(403, 'This account has been deactivated');
@@ -48,27 +65,30 @@ const login = asyncHandler(async (req, res) => {
 });
 
 const requestOtp = asyncHandler(async (req, res) => {
-  const { mobileNumber } = req.body;
-  const user = await User.findOne({ mobileNumber });
+  const { identifier } = req.body;
+  const { user: userQuery, classified } = findUserByIdentifier(identifier);
+  const user = userQuery ? await userQuery : null;
 
   // Always respond the same way whether or not the account exists, to
-  // avoid leaking which mobile numbers are registered.
+  // avoid leaking which emails/mobile numbers are registered.
   if (user) {
     const code = crypto.randomInt(100000, 999999).toString();
     await user.setOtp(code, 10);
     await user.save();
-    await deliverOtp(mobileNumber, code);
+    if (classified.type === 'email') await deliverOtpEmail(classified.value, code);
+    else await deliverOtpSms(classified.value, code);
   }
 
   res.json({ message: 'If that account exists, an OTP has been sent.' });
 });
 
 const resetPasswordWithOtp = asyncHandler(async (req, res) => {
-  const { mobileNumber, otp, newPassword } = req.body;
+  const { identifier, otp, newPassword } = req.body;
+  const { user: userQuery } = findUserByIdentifier(identifier);
 
-  const user = await User.findOne({ mobileNumber }).select('+otp.codeHash +otp.expiresAt +otp.attempts');
+  const user = userQuery ? await userQuery.select('+otp.codeHash +otp.expiresAt +otp.attempts') : null;
   if (!user) {
-    throw new ApiError(400, 'Invalid OTP or mobile number');
+    throw new ApiError(400, 'Invalid OTP or account');
   }
 
   const valid = await user.verifyOtp(otp);
@@ -83,17 +103,65 @@ const resetPasswordWithOtp = asyncHandler(async (req, res) => {
   res.json({ message: 'Password reset successfully. Please log in.' });
 });
 
+/**
+ * Google Sign-In: the frontend uses Google Identity Services to get an ID
+ * token straight from Google, then sends just that token here — we verify
+ * it against Google's public keys (never trusting a client-supplied email
+ * directly) and create/link the account. Requires GOOGLE_CLIENT_ID to be
+ * configured; without it this endpoint clearly reports that instead of
+ * quietly failing.
+ */
+const googleAuth = asyncHandler(async (req, res) => {
+  const { credential } = req.body;
+  const clientId = process.env.GOOGLE_CLIENT_ID;
+  if (!clientId) {
+    throw new ApiError(501, 'Google Sign-In is not configured on this server yet (GOOGLE_CLIENT_ID missing)');
+  }
+
+  // eslint-disable-next-line global-require
+  const { OAuth2Client } = require('google-auth-library');
+  const client = new OAuth2Client(clientId);
+
+  let payload;
+  try {
+    const ticket = await client.verifyIdToken({ idToken: credential, audience: clientId });
+    payload = ticket.getPayload();
+  } catch (err) {
+    throw new ApiError(401, 'Invalid Google credential');
+  }
+
+  let user = await User.findOne({ googleId: payload.sub });
+  if (!user) {
+    user = await User.findOne({ email: payload.email });
+    if (user) {
+      user.googleId = payload.sub;
+    } else {
+      user = new User({ googleId: payload.sub, email: payload.email, studentName: payload.name });
+    }
+    await user.save();
+  }
+  if (!user.isActive) throw new ApiError(403, 'This account has been deactivated');
+
+  const token = signToken(user);
+  res.json({ token, user: user.toSafeJSON() });
+});
+
 const me = asyncHandler(async (req, res) => {
   res.json({ user: req.user.toSafeJSON() });
 });
 
 const updateMe = asyncHandler(async (req, res) => {
-  const { studentName, mobileNumber, collegeName } = req.body;
+  const { studentName, mobileNumber, email, collegeName } = req.body;
 
   if (mobileNumber && mobileNumber !== req.user.mobileNumber) {
     const existing = await User.findOne({ mobileNumber });
     if (existing) throw new ApiError(409, 'That mobile number is already in use by another account');
     req.user.mobileNumber = mobileNumber;
+  }
+  if (email && email.toLowerCase() !== req.user.email) {
+    const existing = await User.findOne({ email: email.toLowerCase() });
+    if (existing) throw new ApiError(409, 'That email is already in use by another account');
+    req.user.email = email.toLowerCase();
   }
   if (studentName !== undefined) req.user.studentName = studentName;
   if (collegeName !== undefined) req.user.collegeName = collegeName;
@@ -113,4 +181,4 @@ const logout = asyncHandler(async (req, res) => {
   res.json({ message: 'Logged out' });
 });
 
-module.exports = { signup, login, requestOtp, resetPasswordWithOtp, me, updateMe, logout };
+module.exports = { signup, login, requestOtp, resetPasswordWithOtp, googleAuth, me, updateMe, logout };
