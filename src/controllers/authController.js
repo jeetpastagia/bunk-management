@@ -50,11 +50,25 @@ const signup = asyncHandler(async (req, res) => {
 
 const login = asyncHandler(async (req, res) => {
   const { identifier, password } = req.body;
-  const { user: userQuery } = findUserByIdentifier(identifier);
+  const { user: userQuery, classified } = findUserByIdentifier(identifier);
+  if (!classified.type) throw new ApiError(400, 'Enter a valid email address or mobile number');
 
   const user = userQuery ? await userQuery.select('+passwordHash') : null;
-  if (!user || !(await user.comparePassword(password))) {
-    throw new ApiError(401, 'Invalid email/mobile number or password');
+
+  // Distinct messages per failure reason (root cause of the old
+  // "Record not found" vs "Already registered" contradiction): that bug
+  // happened because a Google-only account (no passwordHash) always fell
+  // through to one generic "invalid" message on login, while Register
+  // correctly recognised the same email as taken. Google-only accounts now
+  // get a message that tells them what actually happened instead.
+  if (!user) {
+    throw new ApiError(404, 'No account found with that email/mobile number');
+  }
+  if (!user.passwordHash) {
+    throw new ApiError(400, 'This account signed up with Google. Continue with Google, or use "Forgot password" to set a password for it.');
+  }
+  if (!(await user.comparePassword(password))) {
+    throw new ApiError(401, 'Incorrect password');
   }
   if (!user.isActive) {
     throw new ApiError(403, 'This account has been deactivated');
@@ -151,7 +165,16 @@ const me = asyncHandler(async (req, res) => {
 });
 
 const updateMe = asyncHandler(async (req, res) => {
-  const { studentName, mobileNumber, email, collegeName } = req.body;
+  const {
+    studentName,
+    mobileNumber,
+    email,
+    collegeName,
+    theme,
+    notificationPrefs,
+    defaultStartPage,
+    confirmBeforeDelete,
+  } = req.body;
 
   if (mobileNumber && mobileNumber !== req.user.mobileNumber) {
     const existing = await User.findOne({ mobileNumber });
@@ -165,6 +188,18 @@ const updateMe = asyncHandler(async (req, res) => {
   }
   if (studentName !== undefined) req.user.studentName = studentName;
   if (collegeName !== undefined) req.user.collegeName = collegeName;
+  if (theme !== undefined) req.user.theme = theme;
+  if (defaultStartPage !== undefined) req.user.defaultStartPage = defaultStartPage;
+  if (confirmBeforeDelete !== undefined) req.user.confirmBeforeDelete = confirmBeforeDelete;
+  if (notificationPrefs !== undefined) {
+    // .toObject() first: notificationPrefs is a Mongoose nested-subdocument
+    // instance, not a plain object — spreading it directly can pick up
+    // internal Mongoose properties instead of just the three boolean fields.
+    const current = req.user.notificationPrefs?.toObject
+      ? req.user.notificationPrefs.toObject()
+      : req.user.notificationPrefs || {};
+    req.user.notificationPrefs = { ...current, ...notificationPrefs };
+  }
 
   await req.user.save();
   res.json({ user: req.user.toSafeJSON() });

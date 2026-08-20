@@ -3,6 +3,9 @@
 const Semester = require('../models/Semester');
 const Subject = require('../models/Subject');
 const TimetableSlot = require('../models/TimetableSlot');
+const Room = require('../models/Room');
+const RoomMembership = require('../models/RoomMembership');
+const roomService = require('../services/roomService');
 const { ApiError, asyncHandler } = require('../middleware/errorHandler');
 
 /** First-time setup: create the user's profile fields + first active semester. */
@@ -91,7 +94,54 @@ const startNewSemester = asyncHandler(async (req, res) => {
   req.user.currentSemester = newSemester._id;
   await req.user.save();
 
+  // Rooms are keyed to a semester (Room.semester). Without this, a Room
+  // stays pinned to the semester it was created in forever: once its owner
+  // starts a new semester, syncOwnedRoomsForSemester (which queries
+  // Room.find({ owner, semester: currentSemester })) would never find this
+  // room again, and it would silently stop receiving any future
+  // subject/timetable updates — the exact "joined room stops reflecting
+  // the creator's room" bug. Re-point owned rooms to the new semester and
+  // re-sync every member into it (picking up whatever got reused above).
+  const ownedRooms = await Room.find({ owner: req.user._id, semester: oldSemester._id });
+  if (ownedRooms.length) {
+    await Room.updateMany({ owner: req.user._id, semester: oldSemester._id }, { semester: newSemester._id });
+    for (const room of ownedRooms) {
+      room.semester = newSemester._id;
+      // eslint-disable-next-line no-await-in-loop
+      await roomService.syncRoomToAllMembers(room);
+    }
+  }
+
+  // Symmetric case: this user is a MEMBER (not owner) of some room(s) —
+  // pull the room's current shared subjects/timetable into their new
+  // semester right away instead of leaving them empty until the owner
+  // happens to make an edit.
+  const memberships = await RoomMembership.find({ user: req.user._id }).populate('room');
+  for (const membership of memberships) {
+    if (membership.room) {
+      // eslint-disable-next-line no-await-in-loop
+      await roomService.syncRoomToMember(membership.room, req.user);
+    }
+  }
+
   res.status(201).json({ archivedSemester: oldSemester, newSemester });
+});
+
+/** Updates the ACTIVE semester's attendance-warning threshold in place (no archiving). */
+const updateAttendanceThreshold = asyncHandler(async (req, res) => {
+  const { requiredAttendancePercentage } = req.body;
+
+  const semester = await Semester.findOne({ _id: req.user.currentSemester, user: req.user._id });
+  if (!semester) throw new ApiError(400, 'No active semester to update');
+
+  semester.requiredAttendancePercentage = requiredAttendancePercentage;
+  await semester.save();
+
+  // Keep the user's profile value (the seed used for the *next* semester) in sync too.
+  req.user.requiredAttendancePercentage = requiredAttendancePercentage;
+  await req.user.save();
+
+  res.json({ semester, user: req.user.toSafeJSON() });
 });
 
 const listSemesters = asyncHandler(async (req, res) => {
@@ -99,4 +149,4 @@ const listSemesters = asyncHandler(async (req, res) => {
   res.json({ semesters });
 });
 
-module.exports = { completeSetup, startNewSemester, listSemesters };
+module.exports = { completeSetup, startNewSemester, listSemesters, updateAttendanceThreshold };

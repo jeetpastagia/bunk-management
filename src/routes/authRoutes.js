@@ -58,6 +58,13 @@ router.put(
     body('mobileNumber').optional().trim().matches(/^\+?[0-9]{10,15}$/).withMessage('Enter a valid mobile number'),
     body('email').optional().trim().isEmail().withMessage('Enter a valid email address'),
     body('collegeName').optional().trim(),
+    body('theme').optional().isIn(['light', 'dark', 'system']).withMessage('Invalid theme'),
+    body('defaultStartPage').optional().isIn(['dashboard', 'timetable', 'rooms']).withMessage('Invalid default page'),
+    body('confirmBeforeDelete').optional().isBoolean().withMessage('confirmBeforeDelete must be true/false'),
+    body('notificationPrefs').optional().isObject().withMessage('notificationPrefs must be an object'),
+    body('notificationPrefs.attendanceWarnings').optional().isBoolean(),
+    body('notificationPrefs.roomActivity').optional().isBoolean(),
+    body('notificationPrefs.timetableUpdates').optional().isBoolean(),
   ],
   validate,
   ctrl.updateMe

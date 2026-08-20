@@ -133,13 +133,46 @@ async function syncRoomToMember(room, member) {
       if (err.code !== 11000) throw err; // duplicate day+lectureNumber race, safe to ignore
     });
   }
+
+  const subjectsChanged = Boolean(
+    subjectDiff.toCreate.length || subjectDiff.toUpdate.length || subjectDiff.toDeleteIds.length
+  );
+  const slotsChanged = Boolean(slotDiff.toCreate.length || slotDiff.toUpdate.length || slotDiff.toDeleteIds.length);
+  return { subjectsChanged, slotsChanged };
+}
+
+/**
+ * Notifies a member that the room's shared subjects/timetable changed,
+ * at most once per room per day (Settings > Notifications > "Timetable
+ * update notifications"). Deliberately NOT called from inside
+ * syncRoomToMember itself — that function also runs on join and on a
+ * member's own new-semester catch-up, neither of which is really an
+ * "update" the member needs pinging about.
+ */
+async function notifyTimetableUpdated(room, member) {
+  const notificationJobs = require('./notificationJobs'); // eslint-disable-line global-require
+  const today = new Date().toISOString().slice(0, 10);
+  await notificationJobs.notifyUser(member, {
+    type: 'timetable_update',
+    title: `"${room.name}" timetable updated`,
+    body: `The shared subjects/timetable for "${room.name}" changed — check what's new.`,
+    data: { roomId: room._id },
+    dedupeKey: `timetable_update:${room._id}:${member._id}:${today}`,
+  });
 }
 
 async function syncRoomToAllMembers(room) {
   const User = require('../models/User'); // eslint-disable-line global-require
   const memberships = await RoomMembership.find({ room: room._id });
   const members = await User.find({ _id: { $in: memberships.map((m) => m.user) } });
-  await Promise.all(members.map((member) => syncRoomToMember(room, member)));
+  await Promise.all(
+    members.map(async (member) => {
+      const result = await syncRoomToMember(room, member);
+      if (result && (result.subjectsChanged || result.slotsChanged)) {
+        await notifyTimetableUpdated(room, member);
+      }
+    })
+  );
 }
 
 /** Called after the owner's subjects/timetable change, to propagate to every member. */
@@ -158,6 +191,20 @@ async function joinRoom(user, code) {
 
   await RoomMembership.create({ room: room._id, user: user._id });
   await syncRoomToMember(room, user);
+
+  const User = require('../models/User'); // eslint-disable-line global-require
+  const notificationJobs = require('./notificationJobs'); // eslint-disable-line global-require
+  const owner = await User.findById(room.owner);
+  if (owner) {
+    await notificationJobs.notifyUser(owner, {
+      type: 'room_activity',
+      title: 'New member joined your room',
+      body: `${user.studentName || 'A student'} joined "${room.name}" using code ${room.code}.`,
+      data: { roomId: room._id, memberId: user._id },
+      dedupeKey: `room_activity:${room._id}:member:${user._id}`,
+    });
+  }
+
   return room;
 }
 

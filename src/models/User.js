@@ -46,6 +46,17 @@ const userSchema = new mongoose.Schema(
     isActive: { type: Boolean, default: true },
 
     fcmTokens: [{ type: String }], // for push notifications, one per device
+
+    // App preferences (Settings page). Kept on the user document so they
+    // follow the account across devices/browsers, not just localStorage.
+    theme: { type: String, enum: ['light', 'dark', 'system'], default: 'system' },
+    notificationPrefs: {
+      attendanceWarnings: { type: Boolean, default: true },
+      roomActivity: { type: Boolean, default: true },
+      timetableUpdates: { type: Boolean, default: true },
+    },
+    defaultStartPage: { type: String, enum: ['dashboard', 'timetable', 'rooms'], default: 'dashboard' },
+    confirmBeforeDelete: { type: Boolean, default: true },
   },
   { timestamps: true }
 );

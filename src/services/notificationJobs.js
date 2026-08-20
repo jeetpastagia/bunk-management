@@ -32,6 +32,20 @@ const { ensureLecturesForDate, startOfDay } = require('../controllers/attendance
 
 const DAY_NAMES = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
 
+// Maps each notification type to the Settings toggle that gates it. Types
+// with no entry here are never gated (none currently — every type belongs
+// to one of the three Settings categories).
+const PREF_BY_TYPE = {
+  lecture_reminder: 'attendanceWarnings',
+  attendance_reminder: 'attendanceWarnings',
+  below_75_warning: 'attendanceWarnings',
+  close_to_75_warning: 'attendanceWarnings',
+  missed_attendance: 'attendanceWarnings',
+  daily_summary: 'attendanceWarnings',
+  room_activity: 'roomActivity',
+  timetable_update: 'timetableUpdates',
+};
+
 function dateKey(date) {
   return startOfDay(date).toISOString().slice(0, 10);
 }
@@ -50,6 +64,11 @@ async function semesterRecords(user, semesterId) {
  * null (not an error) when the condition already fired today.
  */
 async function notifyUser(user, { type, title, body, data, dedupeKey }) {
+  const prefKey = PREF_BY_TYPE[type];
+  if (prefKey && user.notificationPrefs && user.notificationPrefs[prefKey] === false) {
+    return null; // user turned this notification category off in Settings
+  }
+
   let doc;
   try {
     doc = await Notification.create({ user: user._id, type, title, body, data, dedupeKey });

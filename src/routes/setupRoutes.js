@@ -31,4 +31,11 @@ router.post('/new-semester', [...semesterRules, body('reuseTimetable').optional(
 
 router.get('/semesters', ctrl.listSemesters);
 
+router.patch(
+  '/attendance-threshold',
+  [body('requiredAttendancePercentage').isFloat({ min: 0, max: 100 }).withMessage('Must be between 0 and 100')],
+  validate,
+  ctrl.updateAttendanceThreshold
+);
+
 module.exports = router;

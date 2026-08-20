@@ -9,6 +9,8 @@ const TYPES = [
   'close_to_75_warning',
   'missed_attendance',
   'daily_summary',
+  'room_activity',
+  'timetable_update',
 ];
 
 /**
