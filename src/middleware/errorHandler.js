@@ -19,7 +19,14 @@ function errorHandler(err, req, res, next) {
     return res.status(400).json({ error: 'Validation failed', details: err.errors });
   }
   if (err.code === 11000) {
-    return res.status(409).json({ error: 'Duplicate resource', details: err.keyValue });
+    // Global safety net: no matter which route hit this (even one that
+    // doesn't specifically translate it, or a future one that forgets
+    // to), a real person should never see the raw "Duplicate resource"
+    // wording again — it read as a broken app rather than what it
+    // actually means.
+    const field = err.keyValue && Object.keys(err.keyValue)[0];
+    const label = field === 'email' ? 'email' : field === 'mobileNumber' ? 'mobile number' : field === 'googleId' ? 'Google account' : 'information';
+    return res.status(409).json({ error: `An account with this ${label} already exists`, details: err.keyValue });
   }
   if (err instanceof ApiError) {
     return res.status(err.statusCode).json({ error: err.message, details: err.details });

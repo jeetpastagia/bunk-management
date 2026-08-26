@@ -51,7 +51,7 @@ const signup = asyncHandler(async (req, res) => {
     // index is the real guarantee; translate its raw E11000 into the same
     // friendly message instead of letting a generic "Duplicate resource"
     // error reach the user.
-    if (err.code === 11000) {
+    if (Number(err.code) === 11000) {
       throw new ApiError(409, 'An account with this email or mobile number already exists');
     }
     throw err;
@@ -168,7 +168,7 @@ const googleAuth = asyncHandler(async (req, res) => {
     try {
       await user.save();
     } catch (err) {
-      if (err.code !== 11000) throw err;
+      if (Number(err.code) !== 11000) throw err;
       // Lost a race with a near-simultaneous identical request for this
       // same Google account (e.g. a double-tap on "Continue with Google"
       // before the button had a chance to disable — nothing previously
