@@ -42,7 +42,20 @@ const signup = asyncHandler(async (req, res) => {
 
   const user = new User({ [field]: classified.value, studentName });
   await user.setPassword(password);
-  await user.save();
+  try {
+    await user.save();
+  } catch (err) {
+    // The findOne check above has a race window (two near-simultaneous
+    // signups for the same identifier — e.g. a retried request while the
+    // server was cold-starting — can both pass it). The database's unique
+    // index is the real guarantee; translate its raw E11000 into the same
+    // friendly message instead of letting a generic "Duplicate resource"
+    // error reach the user.
+    if (err.code === 11000) {
+      throw new ApiError(409, 'An account with this email or mobile number already exists');
+    }
+    throw err;
+  }
 
   const token = signToken(user);
   res.status(201).json({ token, user: user.toSafeJSON() });
