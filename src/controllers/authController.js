@@ -165,7 +165,19 @@ const googleAuth = asyncHandler(async (req, res) => {
     } else {
       user = new User({ googleId: payload.sub, email: payload.email, studentName: payload.name });
     }
-    await user.save();
+    try {
+      await user.save();
+    } catch (err) {
+      if (err.code !== 11000) throw err;
+      // Lost a race with a near-simultaneous identical request for this
+      // same Google account (e.g. a double-tap on "Continue with Google"
+      // before the button had a chance to disable — nothing previously
+      // stopped that). The other request already created/linked this
+      // exact account, so re-fetch it and sign in normally instead of
+      // showing an error for something that isn't actually a failure.
+      user = (await User.findOne({ googleId: payload.sub })) || (await User.findOne({ email: payload.email }));
+      if (!user) throw err; // genuinely unexpected — surface the original error
+    }
   }
   if (!user.isActive) throw new ApiError(403, 'This account has been deactivated');
 
