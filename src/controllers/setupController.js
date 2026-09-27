@@ -3,6 +3,7 @@
 const Semester = require('../models/Semester');
 const Subject = require('../models/Subject');
 const TimetableSlot = require('../models/TimetableSlot');
+const LectureRecord = require('../models/LectureRecord');
 const Room = require('../models/Room');
 const RoomMembership = require('../models/RoomMembership');
 const roomService = require('../services/roomService');
@@ -149,4 +150,68 @@ const listSemesters = asyncHandler(async (req, res) => {
   res.json({ semesters });
 });
 
-module.exports = { completeSetup, startNewSemester, listSemesters, updateAttendanceThreshold };
+/**
+ * Edits a semester's own fields (name/dates/threshold) — works for the
+ * active semester or any archived one. If it's the active semester and the
+ * threshold changes, mirrors updateAttendanceThreshold's side effect of
+ * keeping the user's profile seed value in sync.
+ */
+const updateSemester = asyncHandler(async (req, res) => {
+  const semester = await Semester.findOne({ _id: req.params.id, user: req.user._id });
+  if (!semester) throw new ApiError(404, 'Semester not found');
+
+  const { name, startDate, endDate, requiredAttendancePercentage } = req.body;
+  if (name !== undefined) semester.name = name;
+  if (startDate !== undefined) semester.startDate = new Date(startDate);
+  if (endDate !== undefined) semester.endDate = endDate ? new Date(endDate) : undefined;
+  if (requiredAttendancePercentage !== undefined) semester.requiredAttendancePercentage = requiredAttendancePercentage;
+  await semester.save();
+
+  if (requiredAttendancePercentage !== undefined && semester._id.toString() === req.user.currentSemester?.toString()) {
+    req.user.requiredAttendancePercentage = requiredAttendancePercentage;
+    await req.user.save();
+  }
+
+  res.json({ semester });
+});
+
+/**
+ * Deletes an ARCHIVED semester and everything scoped to it (subjects,
+ * timetable slots, lecture records) — deliberately refuses to delete the
+ * currently active semester (that would orphan user.currentSemester) or
+ * one a Room still points to (that would break sync for anyone in it;
+ * per the startNewSemester fix, an owned Room always gets re-pointed to
+ * the new semester, so this should only ever trip on a genuinely stale
+ * reference worth surfacing rather than silently working around).
+ */
+const deleteSemester = asyncHandler(async (req, res) => {
+  const semester = await Semester.findOne({ _id: req.params.id, user: req.user._id });
+  if (!semester) throw new ApiError(404, 'Semester not found');
+
+  if (semester._id.toString() === req.user.currentSemester?.toString()) {
+    throw new ApiError(400, 'Cannot delete your active semester — start a new semester first');
+  }
+
+  const referencingRoom = await Room.findOne({ owner: req.user._id, semester: semester._id });
+  if (referencingRoom) {
+    throw new ApiError(400, `Room "${referencingRoom.name}" still uses this semester — resolve that room first`);
+  }
+
+  await Promise.all([
+    Subject.deleteMany({ user: req.user._id, semester: semester._id }),
+    TimetableSlot.deleteMany({ user: req.user._id, semester: semester._id }),
+    LectureRecord.deleteMany({ user: req.user._id, semester: semester._id }),
+  ]);
+  await semester.deleteOne();
+
+  res.json({ message: 'Semester and its subjects/timetable/attendance records deleted' });
+});
+
+module.exports = {
+  completeSetup,
+  startNewSemester,
+  listSemesters,
+  updateSemester,
+  deleteSemester,
+  updateAttendanceThreshold,
+};

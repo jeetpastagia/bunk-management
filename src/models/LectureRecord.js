@@ -2,7 +2,7 @@
 
 const mongoose = require('mongoose');
 
-const STATUSES = ['pending', 'attended', 'bunked', 'holiday', 'cancelled', 'extra'];
+const STATUSES = ['pending', 'attended', 'bunked', 'holiday', 'cancelled', 'extra', 'exam'];
 
 /**
  * The atomic unit of the whole system. One document = one lecture, on one

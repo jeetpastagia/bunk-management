@@ -1,7 +1,7 @@
 'use strict';
 
 const express = require('express');
-const { body } = require('express-validator');
+const { body, param } = require('express-validator');
 const ctrl = require('../controllers/setupController');
 const { validate } = require('../middleware/validate');
 const { requireAuth } = require('../middleware/auth');
@@ -30,6 +30,21 @@ router.post(
 router.post('/new-semester', [...semesterRules, body('reuseTimetable').optional().isBoolean()], validate, ctrl.startNewSemester);
 
 router.get('/semesters', ctrl.listSemesters);
+
+router.patch(
+  '/semesters/:id',
+  [
+    param('id').isMongoId(),
+    body('name').optional().trim().notEmpty(),
+    body('startDate').optional().isISO8601(),
+    body('endDate').optional({ nullable: true, checkFalsy: true }).isISO8601(),
+    body('requiredAttendancePercentage').optional().isFloat({ min: 0, max: 100 }),
+  ],
+  validate,
+  ctrl.updateSemester
+);
+
+router.delete('/semesters/:id', [param('id').isMongoId()], validate, ctrl.deleteSemester);
 
 router.patch(
   '/attendance-threshold',

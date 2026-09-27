@@ -15,6 +15,10 @@
  *   'cancelled' -> excluded entirely (does not affect attendance)
  *   'extra'     -> counts toward conducted AND attended (treated like an
  *                  attended lecture; it only exists if it was held)
+ *   'exam'      -> excluded entirely (does not affect attendance) — same
+ *                  treatment as 'holiday', kept as a distinct status so
+ *                  exam-period days are visibly different in history/
+ *                  calendar views instead of just looking like a holiday
  *   'pending'   -> not yet marked; excluded from calculations until marked
  */
 

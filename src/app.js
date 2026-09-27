@@ -15,6 +15,7 @@ const subjectRoutes = require('./routes/subjectRoutes');
 const timetableRoutes = require('./routes/timetableRoutes');
 const attendanceRoutes = require('./routes/attendanceRoutes');
 const holidayRoutes = require('./routes/holidayRoutes');
+const examRoutes = require('./routes/examRoutes');
 const notificationRoutes = require('./routes/notificationRoutes');
 const roomRoutes = require('./routes/roomRoutes');
 
@@ -44,6 +45,7 @@ function createApp() {
   app.use('/api/timetable', timetableRoutes);
   app.use('/api/attendance', attendanceRoutes);
   app.use('/api/holidays', holidayRoutes);
+  app.use('/api/exams', examRoutes);
   app.use('/api/notifications', notificationRoutes);
   app.use('/api/rooms', roomRoutes);
 

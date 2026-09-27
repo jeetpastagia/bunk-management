@@ -298,6 +298,36 @@ const facultyAnalytics = asyncHandler(async (req, res) => {
   });
 });
 
+/**
+ * Overview + subject breakdown for ANY semester the user owns (active or
+ * archived) — the current-semester endpoints above always read
+ * req.user.currentSemester, which can't show a past semester's numbers.
+ * Used by Settings > "click a past semester to see its details".
+ */
+const semesterOverview = asyncHandler(async (req, res) => {
+  const semester = await Semester.findOne({ _id: req.params.semesterId, user: req.user._id });
+  if (!semester) throw new ApiError(404, 'Semester not found');
+
+  const records = await semesterRecords(req.user, semester._id);
+  const overall = engine.summarize(records);
+  const requiredPct = semester.requiredAttendancePercentage;
+
+  const subjects = await Subject.find({ user: req.user._id, semester: semester._id });
+  const bySubjectId = engine.groupSummarize(records, (r) => r.subject.toString());
+  const subjectBreakdown = subjects.map((s) => {
+    const stats = bySubjectId[s._id.toString()] || engine.summarize([]);
+    return { subject: { id: s._id, name: s.name, code: s.code, facultyName: s.facultyName }, ...stats };
+  });
+
+  res.json({
+    semester,
+    overall,
+    requiredAttendancePercentage: requiredPct,
+    danger: overall.percentage < requiredPct,
+    subjects: subjectBreakdown,
+  });
+});
+
 const monthlyReport = asyncHandler(async (req, res) => {
   const semester = await Semester.findById(req.user.currentSemester);
   const records = await semesterRecords(req.user, semester._id);
@@ -426,6 +456,7 @@ module.exports = {
   markDay,
   backfillBunks,
   overview,
+  semesterOverview,
   subjectAnalytics,
   facultyAnalytics,
   monthlyReport,

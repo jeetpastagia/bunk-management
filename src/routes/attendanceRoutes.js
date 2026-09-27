@@ -41,6 +41,7 @@ router.post(
 );
 
 router.get('/overview', ctrl.overview);
+router.get('/semesters/:semesterId/overview', [param('semesterId').isMongoId()], validate, ctrl.semesterOverview);
 router.get('/subjects', ctrl.subjectAnalytics);
 router.get('/faculty', ctrl.facultyAnalytics);
 router.get('/reports/monthly', ctrl.monthlyReport);
