@@ -4,6 +4,7 @@ const LectureRecord = require('../models/LectureRecord');
 const TimetableSlot = require('../models/TimetableSlot');
 const Subject = require('../models/Subject');
 const Holiday = require('../models/Holiday');
+const Exam = require('../models/Exam');
 const Semester = require('../models/Semester');
 const engine = require('../services/attendanceEngine');
 const { ApiError, asyncHandler } = require('../middleware/errorHandler');
@@ -226,6 +227,64 @@ async function semesterRecords(user, semesterId) {
   return LectureRecord.find({ user: user._id, semester: semesterId }).lean();
 }
 
+/**
+ * Projects the weekly timetable template forward across [fromDate, toDate]
+ * (inclusive) to count how many lectures will actually still be conducted
+ * before a semester's end date — the piece needed to tell "you need 12 more
+ * lectures to reach 75%" apart from "...but only 8 remain before the
+ * semester ends, so 75% is no longer reachable." Holidays and exam-period
+ * dates in range are excluded, same as they are from real attendance.
+ * Returns { total, bySubject } where bySubject maps subjectId -> count.
+ */
+async function countRemainingLectures(user, semesterId, fromDate, toDate) {
+  const from = startOfDay(fromDate);
+  const to = startOfDay(toDate);
+  if (to < from) return { total: 0, bySubject: {} };
+
+  const slots = await TimetableSlot.find({ user: user._id, semester: semesterId }).lean();
+  if (!slots.length) return { total: 0, bySubject: {} };
+
+  const slotsByDay = new Map();
+  for (const slot of slots) {
+    if (!slotsByDay.has(slot.day)) slotsByDay.set(slot.day, []);
+    slotsByDay.get(slot.day).push(slot);
+  }
+
+  const [holidays, exams] = await Promise.all([
+    Holiday.find({ user: user._id, date: { $gte: from, $lte: to } }).select('date').lean(),
+    Exam.find({ user: user._id, date: { $gte: from, $lte: to } }).select('date').lean(),
+  ]);
+  const excludedDates = new Set(
+    [...holidays, ...exams].map((h) => startOfDay(h.date).toISOString().slice(0, 10))
+  );
+
+  let total = 0;
+  const bySubject = {};
+  for (let d = new Date(from); d <= to; d.setDate(d.getDate() + 1)) {
+    if (excludedDates.has(d.toISOString().slice(0, 10))) continue;
+    const daySlots = slotsByDay.get(DAY_NAMES[d.getDay()]);
+    if (!daySlots) continue;
+    total += daySlots.length;
+    for (const slot of daySlots) {
+      const key = slot.subject.toString();
+      bySubject[key] = (bySubject[key] || 0) + 1;
+    }
+  }
+  return { total, bySubject };
+}
+
+/**
+ * Given current totals + a target %, reports whether hitting that target is
+ * still mathematically reachable by the semester's end date (attending
+ * every single remaining lecture), and what the best-case final percentage
+ * would be either way. Returns null if the semester has no end date set —
+ * callers should omit the field entirely in that case rather than guessing.
+ */
+function achievability(attended, conducted, targetPct, remainingCount) {
+  const bestPossible = engine.percentage(attended + remainingCount, conducted + remainingCount);
+  return { remainingLectures: remainingCount, achievable: bestPossible >= targetPct, bestPossiblePercentage: bestPossible };
+}
+
 const overview = asyncHandler(async (req, res) => {
   const semester = await Semester.findById(req.user.currentSemester);
   if (!semester) throw new ApiError(400, 'No active semester');
@@ -247,6 +306,24 @@ const overview = asyncHandler(async (req, res) => {
   const todayRecords = await ensureLecturesForDate(req.user, now);
   const todayAttendance = engine.summarize(todayRecords);
 
+  // Only meaningful once the semester has an end date (see Settings) — the
+  // "X% must be reached within the semester's date range" mapping.
+  let semesterEndInfo = null;
+  if (semester.endDate) {
+    const today = startOfDay(now);
+    const end = startOfDay(semester.endDate);
+    const daysRemaining = Math.max(0, Math.ceil((end - today) / 86400000));
+    const { total: remainingLectures } = end >= today
+      ? await countRemainingLectures(req.user, semester._id, today, end)
+      : { total: 0 };
+    semesterEndInfo = {
+      endDate: semester.endDate,
+      daysRemaining,
+      ended: end < today,
+      ...achievability(overall.attended, overall.conducted, requiredPct, remainingLectures),
+    };
+  }
+
   res.json({
     overall,
     monthly,
@@ -255,6 +332,7 @@ const overview = asyncHandler(async (req, res) => {
     monthlyDanger: monthly.percentage < requiredPct,
     safeBunksRemaining: safeBunks,
     lecturesNeededForTarget: neededFor75,
+    semesterEndInfo,
     today: {
       lectures: todayRecords,
       summary: todayAttendance,
@@ -269,13 +347,26 @@ const subjectAnalytics = asyncHandler(async (req, res) => {
 
   const bySubjectId = engine.groupSummarize(records, (r) => r.subject.toString());
 
+  let remainingBySubject = {};
+  if (semester.endDate) {
+    const today = startOfDay(new Date());
+    const end = startOfDay(semester.endDate);
+    if (end >= today) {
+      ({ bySubject: remainingBySubject } = await countRemainingLectures(req.user, semester._id, today, end));
+    }
+  }
+
   const result = subjects.map((s) => {
     const stats = bySubjectId[s._id.toString()] || engine.summarize([]);
+    const remaining = remainingBySubject[s._id.toString()] || 0;
     return {
       subject: { id: s._id, name: s.name, code: s.code, facultyName: s.facultyName },
       ...stats,
       safeBunksRemaining: engine.safeBunksRemaining(stats.attended, stats.conducted, semester.requiredAttendancePercentage),
       lecturesNeeded: engine.lecturesNeededForTarget(stats.attended, stats.conducted, semester.requiredAttendancePercentage),
+      achievability: semester.endDate
+        ? achievability(stats.attended, stats.conducted, semester.requiredAttendancePercentage, remaining)
+        : null,
     };
   });
 
@@ -397,6 +488,9 @@ const futureSimulator = asyncHandler(async (req, res) => {
   const { attended, conducted } = engine.summarize(records);
 
   const day = startOfDay(new Date(date));
+  if (semester.endDate && day > startOfDay(semester.endDate)) {
+    throw new ApiError(400, `That date is after "${semester.name}" ends on ${startOfDay(semester.endDate).toISOString().slice(0, 10)}`);
+  }
   const dayName = DAY_NAMES[day.getDay()];
   const [slots, holiday] = await Promise.all([
     TimetableSlot.find({ user: req.user._id, semester: semester._id, day: dayName }),
