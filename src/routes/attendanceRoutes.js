@@ -41,9 +41,9 @@ router.post(
 );
 
 router.get('/overview', ctrl.overview);
-router.get('/weekly-trend', ctrl.weeklyTrend);
+router.get('/weekly-trend', [query('semester').optional().isMongoId()], validate, ctrl.weeklyTrend);
 router.get('/semesters/:semesterId/overview', [param('semesterId').isMongoId()], validate, ctrl.semesterOverview);
-router.get('/subjects', ctrl.subjectAnalytics);
+router.get('/subjects', [query('semester').optional().isMongoId()], validate, ctrl.subjectAnalytics);
 router.get('/faculty', ctrl.facultyAnalytics);
 router.get('/reports/monthly', ctrl.monthlyReport);
 router.get('/calendar', [query('month').isInt({ min: 1, max: 12 }), query('year').isInt()], validate, ctrl.calendar);

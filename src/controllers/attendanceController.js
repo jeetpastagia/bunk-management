@@ -231,6 +231,23 @@ async function semesterRecords(user, semesterId) {
 }
 
 /**
+ * Resolves which semester an analytics endpoint should read from: an
+ * explicit `?semester=<id>` query param (Dashboard's "This Semester"
+ * switcher, letting a user browse a past semester's numbers) if given and
+ * owned by this user, falling back to their active semester otherwise.
+ */
+async function resolveSemester(req) {
+  if (req.query.semester) {
+    const requested = await Semester.findOne({ _id: req.query.semester, user: req.user._id });
+    if (!requested) throw new ApiError(404, 'Semester not found');
+    return requested;
+  }
+  const active = await Semester.findById(req.user.currentSemester);
+  if (!active) throw new ApiError(400, 'No active semester');
+  return active;
+}
+
+/**
  * Projects the weekly timetable template forward across [fromDate, toDate]
  * (inclusive) to count how many lectures will actually still be conducted
  * before a semester's end date — the piece needed to tell "you need 12 more
@@ -351,8 +368,7 @@ const overview = asyncHandler(async (req, res) => {
  * lectures conducted yet (before the semester started) are left out.
  */
 const weeklyTrend = asyncHandler(async (req, res) => {
-  const semester = await Semester.findById(req.user.currentSemester);
-  if (!semester) throw new ApiError(400, 'No active semester');
+  const semester = await resolveSemester(req);
 
   const records = await semesterRecords(req.user, semester._id);
   const today = startOfDay(new Date());
@@ -371,7 +387,7 @@ const weeklyTrend = asyncHandler(async (req, res) => {
 });
 
 const subjectAnalytics = asyncHandler(async (req, res) => {
-  const semester = await Semester.findById(req.user.currentSemester);
+  const semester = await resolveSemester(req);
   const records = await semesterRecords(req.user, semester._id);
   const subjects = await Subject.find({ user: req.user._id, semester: semester._id });
 
@@ -437,7 +453,12 @@ const semesterOverview = asyncHandler(async (req, res) => {
   const bySubjectId = engine.groupSummarize(records, (r) => r.subject.toString());
   const subjectBreakdown = subjects.map((s) => {
     const stats = bySubjectId[s._id.toString()] || engine.summarize([]);
-    return { subject: { id: s._id, name: s.name, code: s.code, facultyName: s.facultyName }, ...stats };
+    return {
+      subject: { id: s._id, name: s.name, code: s.code, facultyName: s.facultyName },
+      ...stats,
+      safeBunksRemaining: engine.safeBunksRemaining(stats.attended, stats.conducted, requiredPct),
+      lecturesNeeded: engine.lecturesNeededForTarget(stats.attended, stats.conducted, requiredPct),
+    };
   });
 
   res.json({
@@ -445,6 +466,7 @@ const semesterOverview = asyncHandler(async (req, res) => {
     overall,
     requiredAttendancePercentage: requiredPct,
     danger: overall.percentage < requiredPct,
+    safeBunksRemaining: engine.safeBunksRemaining(overall.attended, overall.conducted, requiredPct),
     subjects: subjectBreakdown,
   });
 });

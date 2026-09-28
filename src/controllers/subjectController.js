@@ -1,6 +1,7 @@
 'use strict';
 
 const Subject = require('../models/Subject');
+const Semester = require('../models/Semester');
 const TimetableSlot = require('../models/TimetableSlot');
 const LectureRecord = require('../models/LectureRecord');
 const { ApiError, asyncHandler } = require('../middleware/errorHandler');
@@ -25,9 +26,19 @@ const bulkCreate = asyncHandler(async (req, res) => {
   res.status(201).json({ subjects: created, count: created.length });
 });
 
+// Dashboard's "This Semester" switcher passes ?semester=<id> to browse a
+// past semester's subjects instead of the active one — checked for
+// ownership first so one user can never probe another's semester ids.
 const list = asyncHandler(async (req, res) => {
-  const { search } = req.query;
-  const filter = { user: req.user._id, semester: req.user.currentSemester };
+  const { search, semester } = req.query;
+  let semesterId = req.user.currentSemester;
+  if (semester) {
+    const requested = await Semester.findOne({ _id: semester, user: req.user._id });
+    if (!requested) throw new ApiError(404, 'Semester not found');
+    semesterId = requested._id;
+  }
+
+  const filter = { user: req.user._id, semester: semesterId };
   if (search) filter.$text = { $search: search };
 
   const subjects = await Subject.find(filter).sort({ name: 1 });
