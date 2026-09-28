@@ -109,7 +109,10 @@ const markDay = asyncHandler(async (req, res) => {
   const records = await ensureLecturesForDate(req.user, new Date(date));
   const ids = records.map((r) => r._id);
   await LectureRecord.updateMany({ _id: { $in: ids } }, { status, markedAt: new Date() });
-  const updated = await LectureRecord.find({ _id: { $in: ids } }).populate('subject', 'name');
+  // Same populate fields as ensureLecturesForDate/getDayLectures — the
+  // frontend uses this response directly to redraw the day without a
+  // separate re-fetch, so it needs to be a complete, matching shape.
+  const updated = await LectureRecord.find({ _id: { $in: ids } }).populate('subject', 'name code facultyName').sort({ lectureNumber: 1 });
   res.json({ lectures: updated });
 });
 
