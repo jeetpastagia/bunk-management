@@ -343,6 +343,33 @@ const overview = asyncHandler(async (req, res) => {
   });
 });
 
+/**
+ * Cumulative attendance percentage as of the end of each of the last 7 days
+ * (today included) — "as of that day" rather than "that day alone", since a
+ * single day only has a couple of lectures and its own isolated percentage
+ * jumps between 0/50/100%, which isn't a meaningful trend line. Days with no
+ * lectures conducted yet (before the semester started) are left out.
+ */
+const weeklyTrend = asyncHandler(async (req, res) => {
+  const semester = await Semester.findById(req.user.currentSemester);
+  if (!semester) throw new ApiError(400, 'No active semester');
+
+  const records = await semesterRecords(req.user, semester._id);
+  const today = startOfDay(new Date());
+
+  const days = [];
+  for (let i = 6; i >= 0; i -= 1) {
+    const day = new Date(today);
+    day.setDate(day.getDate() - i);
+    const cumulativeUpToDay = records.filter((r) => new Date(r.date) <= endOfDay(day));
+    const { percentage, conducted } = engine.summarize(cumulativeUpToDay);
+    if (conducted === 0) continue;
+    days.push({ date: day.toISOString().slice(0, 10), percentage, conducted });
+  }
+
+  res.json({ days, requiredAttendancePercentage: semester.requiredAttendancePercentage });
+});
+
 const subjectAnalytics = asyncHandler(async (req, res) => {
   const semester = await Semester.findById(req.user.currentSemester);
   const records = await semesterRecords(req.user, semester._id);
@@ -553,6 +580,7 @@ module.exports = {
   markDay,
   backfillBunks,
   overview,
+  weeklyTrend,
   semesterOverview,
   subjectAnalytics,
   facultyAnalytics,
