@@ -13,7 +13,11 @@ const aiTools = require('../services/aiTools');
 // file's request/response shape and tool-schema format are
 // Gemini-specific.
 
-const MODEL = 'gemini-2.0-flash';
+// Overridable via env without a code change — Google renames/retires
+// model ids over time, so if this stops working, set GEMINI_MODEL to
+// whatever the Google AI Studio model picker currently calls its
+// flash-tier model (e.g. "gemini-flash-latest") rather than editing this file.
+const MODEL = process.env.GEMINI_MODEL || 'gemini-2.0-flash';
 const API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
 const MAX_HISTORY_MESSAGES = 20; // bounds cost/latency regardless of how long the client-side chat history grows
 const MAX_TOOL_ROUNDS = 6; // safety cap on the tool-call loop below
@@ -186,12 +190,20 @@ const chat = asyncHandler(async (req, res) => {
       contents.push({ role: 'user', parts: responseParts });
     }
   } catch (err) {
-    // Network/upstream failures (bad key, rate limit, outage) — never
-    // crash the request or leak API internals, just tell the student to
-    // try again.
+    // Network/upstream failures (bad key, wrong model id, rate limit,
+    // outage) — never crash the request or leak API internals, but DO
+    // distinguish the cause rather than blaming "invalid API key" for
+    // everything: a 400 from Google covers both a bad key AND a stale/
+    // renamed model id, and those need different fixes (see MODEL above).
     // eslint-disable-next-line no-console
     console.error('[Bunk AI] Gemini API error:', err?.status, err?.message);
-    if (err?.status === 400 || err?.status === 401 || err?.status === 403) throw new ApiError(503, 'Bunk AI is misconfigured on the server (invalid API key).');
+    const message = err?.message || '';
+    if (err?.status === 404 || /not found|not supported for generateContent/i.test(message)) {
+      throw new ApiError(503, `Bunk AI is misconfigured on the server (model "${MODEL}" is not available — set GEMINI_MODEL to a currently listed model).`);
+    }
+    if (/api key/i.test(message) || err?.status === 401 || err?.status === 403) {
+      throw new ApiError(503, 'Bunk AI is misconfigured on the server (invalid API key).');
+    }
     if (err?.status === 429) throw new ApiError(429, 'Bunk AI is getting a lot of questions right now — try again in a moment.');
     throw new ApiError(503, 'Bunk AI is temporarily unavailable. Please try again.');
   }
