@@ -305,11 +305,17 @@ function achievability(attended, conducted, targetPct, remainingCount) {
   return { remainingLectures: remainingCount, achievable: bestPossible >= targetPct, bestPossiblePercentage: bestPossible };
 }
 
-const overview = asyncHandler(async (req, res) => {
-  const semester = await Semester.findById(req.user.currentSemester);
+/**
+ * Builds the exact data the Dashboard's overview() endpoint returns, as a
+ * plain object rather than an HTTP response — the shared core so the HTTP
+ * handler and Bunk AI's getAttendanceOverview tool (src/services/aiTools.js)
+ * compute this from one place instead of two copies drifting apart.
+ */
+async function buildOverviewData(user) {
+  const semester = await Semester.findById(user.currentSemester);
   if (!semester) throw new ApiError(400, 'No active semester');
 
-  const records = await semesterRecords(req.user, semester._id);
+  const records = await semesterRecords(user, semester._id);
   const overall = engine.summarize(records);
 
   const now = new Date();
@@ -323,7 +329,7 @@ const overview = asyncHandler(async (req, res) => {
   const safeBunks = engine.safeBunksRemaining(overall.attended, overall.conducted, requiredPct);
   const neededFor75 = engine.lecturesNeededForTarget(overall.attended, overall.conducted, requiredPct);
 
-  const todayRecords = await ensureLecturesForDate(req.user, now);
+  const todayRecords = await ensureLecturesForDate(user, now);
   const todayAttendance = engine.summarize(todayRecords);
 
   // Only meaningful once the semester has an end date (see Settings) — the
@@ -334,7 +340,7 @@ const overview = asyncHandler(async (req, res) => {
     const end = startOfDay(semester.endDate);
     const daysRemaining = Math.max(0, Math.ceil((end - today) / 86400000));
     const { total: remainingLectures } = end >= today
-      ? await countRemainingLectures(req.user, semester._id, today, end)
+      ? await countRemainingLectures(user, semester._id, today, end)
       : { total: 0 };
     semesterEndInfo = {
       endDate: semester.endDate,
@@ -344,7 +350,8 @@ const overview = asyncHandler(async (req, res) => {
     };
   }
 
-  res.json({
+  return {
+    semester,
     overall,
     monthly,
     requiredAttendancePercentage: requiredPct,
@@ -357,7 +364,13 @@ const overview = asyncHandler(async (req, res) => {
       lectures: todayRecords,
       summary: todayAttendance,
     },
-  });
+  };
+}
+
+const overview = asyncHandler(async (req, res) => {
+  const data = await buildOverviewData(req.user);
+  const { semester, ...rest } = data;
+  res.json(rest);
 });
 
 /**
@@ -386,10 +399,10 @@ const weeklyTrend = asyncHandler(async (req, res) => {
   res.json({ days, requiredAttendancePercentage: semester.requiredAttendancePercentage });
 });
 
-const subjectAnalytics = asyncHandler(async (req, res) => {
-  const semester = await resolveSemester(req);
-  const records = await semesterRecords(req.user, semester._id);
-  const subjects = await Subject.find({ user: req.user._id, semester: semester._id });
+/** Shared core behind subjectAnalytics() and Bunk AI's getSubjectBreakdown tool — see buildOverviewData's note above. */
+async function buildSubjectAnalyticsData(user, semester) {
+  const records = await semesterRecords(user, semester._id);
+  const subjects = await Subject.find({ user: user._id, semester: semester._id });
 
   const bySubjectId = engine.groupSummarize(records, (r) => r.subject.toString());
 
@@ -398,11 +411,11 @@ const subjectAnalytics = asyncHandler(async (req, res) => {
     const today = startOfDay(new Date());
     const end = startOfDay(semester.endDate);
     if (end >= today) {
-      ({ bySubject: remainingBySubject } = await countRemainingLectures(req.user, semester._id, today, end));
+      ({ bySubject: remainingBySubject } = await countRemainingLectures(user, semester._id, today, end));
     }
   }
 
-  const result = subjects.map((s) => {
+  return subjects.map((s) => {
     const stats = bySubjectId[s._id.toString()] || engine.summarize([]);
     const remaining = remainingBySubject[s._id.toString()] || 0;
     return {
@@ -415,7 +428,11 @@ const subjectAnalytics = asyncHandler(async (req, res) => {
         : null,
     };
   });
+}
 
+const subjectAnalytics = asyncHandler(async (req, res) => {
+  const semester = await resolveSemester(req);
+  const result = await buildSubjectAnalyticsData(req.user, semester);
   res.json({ subjects: result });
 });
 
@@ -602,14 +619,28 @@ module.exports = {
   markDay,
   backfillBunks,
   overview,
+  buildOverviewData,
   weeklyTrend,
   semesterOverview,
   subjectAnalytics,
+  buildSubjectAnalyticsData,
   facultyAnalytics,
   monthlyReport,
   calendar,
   smartCalculator,
   futureSimulator,
   insights,
-  _internal: { ensureLecturesForDate, startOfDay, endOfDay },
+  // Exposed so src/services/aiTools.js (Bunk AI's deterministic tool
+  // functions) can reuse the exact same semester/date/achievability math
+  // instead of re-deriving it — see that file's header comment.
+  _internal: {
+    ensureLecturesForDate,
+    startOfDay,
+    endOfDay,
+    semesterRecords,
+    resolveSemester,
+    achievability,
+    countRemainingLectures,
+    DAY_NAMES,
+  },
 };

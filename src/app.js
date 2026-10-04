@@ -18,6 +18,7 @@ const holidayRoutes = require('./routes/holidayRoutes');
 const examRoutes = require('./routes/examRoutes');
 const notificationRoutes = require('./routes/notificationRoutes');
 const roomRoutes = require('./routes/roomRoutes');
+const aiRoutes = require('./routes/aiRoutes');
 
 function createApp() {
   const app = express();
@@ -48,6 +49,7 @@ function createApp() {
   app.use('/api/exams', examRoutes);
   app.use('/api/notifications', notificationRoutes);
   app.use('/api/rooms', roomRoutes);
+  app.use('/api/ai', aiRoutes);
 
   app.use(notFound);
   app.use(errorHandler);
