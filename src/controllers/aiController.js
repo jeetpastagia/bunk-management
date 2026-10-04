@@ -21,8 +21,13 @@ const MAX_TOOL_ROUNDS = 6; // safety cap on the tool-call loop below
 
 let client = null;
 function getClient() {
-  if (!process.env.ANTHROPIC_API_KEY) return null;
-  if (!client) client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+  // .trim() guards against the single most common cause of "invalid API
+  // key" despite a correct key: a stray trailing newline/space picked up
+  // when pasting into a dashboard's env var field, which silently breaks
+  // the Bearer header without looking wrong to the human eye.
+  const apiKey = (process.env.ANTHROPIC_API_KEY || '').trim();
+  if (!apiKey) return null;
+  if (!client) client = new Anthropic({ apiKey });
   return client;
 }
 
