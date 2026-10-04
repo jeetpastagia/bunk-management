@@ -13,11 +13,13 @@ const aiTools = require('../services/aiTools');
 // file's request/response shape and tool-schema format are
 // Gemini-specific.
 
-// Overridable via env without a code change — Google renames/retires
-// model ids over time, so if this stops working, set GEMINI_MODEL to
-// whatever the Google AI Studio model picker currently calls its
-// flash-tier model (e.g. "gemini-flash-latest") rather than editing this file.
-const MODEL = process.env.GEMINI_MODEL || 'gemini-2.0-flash';
+// "gemini-flash-latest" is Google's own always-current alias for their
+// recommended flash-tier model — confirmed via GET /v1beta/models against
+// a real key that gemini-2.0-flash has since been retired, while this
+// alias is listed and exists precisely to avoid landing back in the same
+// spot next time Google renames the underlying model. Still overridable
+// via env without a code change if needed.
+const MODEL = process.env.GEMINI_MODEL || 'gemini-flash-latest';
 const API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
 const MAX_HISTORY_MESSAGES = 20; // bounds cost/latency regardless of how long the client-side chat history grows
 const MAX_TOOL_ROUNDS = 6; // safety cap on the tool-call loop below
