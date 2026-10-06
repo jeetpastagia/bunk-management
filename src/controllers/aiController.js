@@ -160,7 +160,11 @@ const chat = asyncHandler(async (req, res) => {
             contents,
             tools: [{ functionDeclarations: TOOLS }],
             systemInstruction,
-            generationConfig: { maxOutputTokens: 1024 },
+            // thinkingBudget: 0 turns off Gemini's internal "extended
+            // thinking" step — pure latency here, since the actual
+            // attendance math always comes from our own deterministic
+            // tools below, never from the model reasoning on its own.
+            generationConfig: { maxOutputTokens: 1024, thinkingConfig: { thinkingBudget: 0 } },
           }),
         });
 
