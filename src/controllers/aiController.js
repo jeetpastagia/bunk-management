@@ -13,15 +13,14 @@ const aiTools = require('../services/aiTools');
 // file's request/response shape and tool-schema format are
 // Gemini-specific.
 
-// "gemini-2.5-flash" is Google's explicitly-labeled STABLE flash release
-// (confirmed via GET /v1beta/models against a real key). Switched to this
-// from the "gemini-flash-latest" alias after hitting real 503 "model is
-// currently experiencing high demand" errors in production — an alias
-// that silently points at whatever Google calls "latest" risks landing on
-// a newer preview-tier model with less provisioned free-tier capacity
-// than a model Google has explicitly marked stable. Still overridable via
-// env without a code change if this one also needs to change later.
-const MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+// "gemini-2.5-flash" showed up in GET /v1beta/models for this key but
+// turned out NOT to be callable via generateContent in production (404
+// "model not found") — so back to "gemini-flash-latest", the alias
+// confirmed working end-to-end earlier. Its only downside is the
+// occasional transient 503 "high demand" error, which the retry loop
+// below now handles directly, so there's no real reason left to chase a
+// different model name. Still overridable via env without a code change.
+const MODEL = process.env.GEMINI_MODEL || 'gemini-flash-latest';
 const API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
 const MAX_HISTORY_MESSAGES = 20; // bounds cost/latency regardless of how long the client-side chat history grows
 const MAX_TOOL_ROUNDS = 6; // safety cap on the tool-call loop below
