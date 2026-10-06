@@ -13,16 +13,24 @@ const aiTools = require('../services/aiTools');
 // file's request/response shape and tool-schema format are
 // Gemini-specific.
 
-// "gemini-flash-latest" is Google's own always-current alias for their
-// recommended flash-tier model — confirmed via GET /v1beta/models against
-// a real key that gemini-2.0-flash has since been retired, while this
-// alias is listed and exists precisely to avoid landing back in the same
-// spot next time Google renames the underlying model. Still overridable
-// via env without a code change if needed.
-const MODEL = process.env.GEMINI_MODEL || 'gemini-flash-latest';
+// "gemini-2.5-flash" is Google's explicitly-labeled STABLE flash release
+// (confirmed via GET /v1beta/models against a real key). Switched to this
+// from the "gemini-flash-latest" alias after hitting real 503 "model is
+// currently experiencing high demand" errors in production — an alias
+// that silently points at whatever Google calls "latest" risks landing on
+// a newer preview-tier model with less provisioned free-tier capacity
+// than a model Google has explicitly marked stable. Still overridable via
+// env without a code change if this one also needs to change later.
+const MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
 const API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
 const MAX_HISTORY_MESSAGES = 20; // bounds cost/latency regardless of how long the client-side chat history grows
 const MAX_TOOL_ROUNDS = 6; // safety cap on the tool-call loop below
+const MAX_RETRIES = 2; // retries for transient 503/429 upstream overload, not for genuine errors
+const RETRY_DELAY_MS = 1200;
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 function getApiKey() {
   // .trim() guards against a stray trailing newline/space picked up when
@@ -142,25 +150,43 @@ const chat = asyncHandler(async (req, res) => {
   let finalText = '';
   try {
     for (let round = 0; round < MAX_TOOL_ROUNDS; round += 1) {
-      // eslint-disable-next-line no-await-in-loop
-      const apiResponse = await fetch(`${API_BASE}/models/${MODEL}:generateContent?key=${apiKey}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents,
-          tools: [{ functionDeclarations: TOOLS }],
-          systemInstruction,
-          generationConfig: { maxOutputTokens: 1024 },
-        }),
-      });
+      let data;
+      let lastErr;
+      for (let attempt = 0; attempt <= MAX_RETRIES; attempt += 1) {
+        // eslint-disable-next-line no-await-in-loop
+        const apiResponse = await fetch(`${API_BASE}/models/${MODEL}:generateContent?key=${apiKey}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents,
+            tools: [{ functionDeclarations: TOOLS }],
+            systemInstruction,
+            generationConfig: { maxOutputTokens: 1024 },
+          }),
+        });
 
-      // eslint-disable-next-line no-await-in-loop
-      const data = await apiResponse.json();
-      if (!apiResponse.ok) {
-        const err = new Error(data?.error?.message || `Gemini API error (${apiResponse.status})`);
+        // eslint-disable-next-line no-await-in-loop
+        const body = await apiResponse.json();
+        if (apiResponse.ok) {
+          data = body;
+          lastErr = null;
+          break;
+        }
+
+        const err = new Error(body?.error?.message || `Gemini API error (${apiResponse.status})`);
         err.status = apiResponse.status;
-        throw err;
+        lastErr = err;
+
+        // Only 503 (overloaded) and 429 (rate limited) are worth retrying —
+        // both are Google's own transient upstream conditions, not genuine
+        // misconfiguration, and Google's 503 message explicitly invites a retry.
+        const retryable = err.status === 503 || err.status === 429;
+        if (!retryable || attempt === MAX_RETRIES) break;
+        // eslint-disable-next-line no-await-in-loop
+        await sleep(RETRY_DELAY_MS * (attempt + 1));
       }
+
+      if (lastErr) throw lastErr;
 
       const candidate = data.candidates?.[0];
       const parts = candidate?.content?.parts || [];
