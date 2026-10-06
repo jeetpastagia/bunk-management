@@ -26,9 +26,23 @@ const MAX_HISTORY_MESSAGES = 20; // bounds cost/latency regardless of how long t
 const MAX_TOOL_ROUNDS = 6; // safety cap on the tool-call loop below
 const MAX_RETRIES = 2; // retries for transient 503/429 upstream overload, not for genuine errors
 const RETRY_DELAY_MS = 1200;
+const MAX_RATE_LIMIT_WAIT_MS = 8000; // cap how long one request will wait on a 429 before giving up instead of blocking the client
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// On a 429, Google tells you exactly how long its quota needs to recover
+// (a RetryInfo detail like { retryDelay: "19s" }) — using that instead of a
+// guessed fixed delay is what actually lets a request-per-minute quota
+// bump recover on its own. Returns null if the wait would be longer than
+// worth blocking this request for, so the caller can fail fast instead.
+function rateLimitRetryDelayMs(body) {
+  const detail = body?.error?.details?.find((d) => d['@type']?.includes('RetryInfo'));
+  const match = /^(\d+(?:\.\d+)?)s$/.exec(detail?.retryDelay || '');
+  if (!match) return RETRY_DELAY_MS;
+  const ms = Math.ceil(parseFloat(match[1]) * 1000);
+  return ms <= MAX_RATE_LIMIT_WAIT_MS ? ms : null;
 }
 
 function getApiKey() {
@@ -183,10 +197,20 @@ const chat = asyncHandler(async (req, res) => {
         // Only 503 (overloaded) and 429 (rate limited) are worth retrying —
         // both are Google's own transient upstream conditions, not genuine
         // misconfiguration, and Google's 503 message explicitly invites a retry.
-        const retryable = err.status === 503 || err.status === 429;
-        if (!retryable || attempt === MAX_RETRIES) break;
-        // eslint-disable-next-line no-await-in-loop
-        await sleep(RETRY_DELAY_MS * (attempt + 1));
+        if (attempt === MAX_RETRIES) break;
+        if (err.status === 503) {
+          // eslint-disable-next-line no-await-in-loop
+          await sleep(RETRY_DELAY_MS * (attempt + 1));
+          continue;
+        }
+        if (err.status === 429) {
+          const waitMs = rateLimitRetryDelayMs(body);
+          if (waitMs == null) break; // Google itself says the quota needs longer than we should block this request for
+          // eslint-disable-next-line no-await-in-loop
+          await sleep(waitMs);
+          continue;
+        }
+        break;
       }
 
       if (lastErr) throw lastErr;
